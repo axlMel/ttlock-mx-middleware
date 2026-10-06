@@ -23,7 +23,7 @@ Este proyecto se desarrolla bajo SDD. **Ningún cambio de comportamiento se impl
 | 001 | event-detectors | En diseño — pendiente tabla de asignaciones activas (Paloma) |
 | 002 | queue-orchestrator (FSM) | En diseño |
 | 003 | queclink-protocol (UDP @Track, multi-modelo) | Implementado |
-| 004 | state-persistence (cursor de polling en Redis) | En diseño |
+| 004 | state-persistence (cursor de polling en Redis) | Implementado |
 | 005 | device-directory (resolución IMEI → modelo/ip/puerto) | En diseño — simplificado: `resumen_unidad` ya trae modelo |
  
 ## Comandos
