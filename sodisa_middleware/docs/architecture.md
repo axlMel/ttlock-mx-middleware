@@ -43,6 +43,8 @@ corre contra una BD local (`docker-compose.yml` + `local-db/seed.sql`) con
 un **esquema asumido**, construido a partir de lo que sí se confirmó
 verbalmente (campos de `resumen_unidad` y `reporte_cadenas`) y sembrado con
 las tramas reales capturadas en campo. Levantar con `docker compose up -d`.
+PostgreSQL local se publica en `127.0.0.1:5433` porque el servicio de
+PostgreSQL de Windows usa el puerto 5432.
 
 **Esto es explícitamente temporal y local-only.** Cuando se confirme el
 esquema real, solo cambia la consulta SQL dentro del `plan.md` del módulo

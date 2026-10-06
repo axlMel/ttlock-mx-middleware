@@ -24,11 +24,13 @@ Este proyecto se desarrolla bajo SDD. **Ningún cambio de comportamiento se impl
 | 002 | queue-orchestrator (FSM) | En diseño |
 | 003 | queclink-protocol (UDP @Track, multi-modelo) | Implementado |
 | 004 | state-persistence (cursor de polling en Redis) | Implementado |
-| 005 | device-directory (resolución IMEI → modelo/ip/puerto) | En diseño — simplificado: `resumen_unidad` ya trae modelo |
+| 005 | device-directory (resolución IMEI → modelo/ip/puerto) | Implementado (esquema local, pendiente confirmar real) |
  
 ## Comandos
 - Ejecutar: `npm run dev` (desarrollo) o `npm start` (producción)
 - Tests: `npm test` (Jest/Vitest)
+- Tests de integración 005: `docker compose up -d postgres` antes de `npm test`;
+  usan la BD local sembrada en `127.0.0.1:5433`, nunca la BD externa.
 - Lint/formato: `npm run lint` / `npm run format`
 - Cola (panel de monitoreo BullMQ, si aplica): `npm run queue:board`
 ## Dominio: entidades clave
