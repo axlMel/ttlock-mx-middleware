@@ -20,7 +20,7 @@ Este proyecto se desarrolla bajo SDD. **Ningún cambio de comportamiento se impl
 ## Especificaciones activas
 | ID | Módulo | Estado |
 |---|---|---|
-| 001 | event-detectors | En diseño — pendiente tabla de asignaciones activas (Paloma) |
+| 001 | event-detectors | Implementado (esquema local, pendiente confirmar real) |
 | 002 | queue-orchestrator (FSM) | En diseño |
 | 003 | queclink-protocol (UDP @Track, multi-modelo) | Implementado |
 | 004 | state-persistence (cursor de polling en Redis) | Implementado |
