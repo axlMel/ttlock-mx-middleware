@@ -48,10 +48,12 @@ interface ChainReportDetector {
   `specs/004`) para saber desde dónde consultar, y `PollingCursorStore.set`
   para avanzarlo tras procesar el lote — nunca guarda el cursor en la BD
   externa (principio V).
-- Ambos detectores corren en intervalos configurables por entorno
-  (`POLL_INTERVAL_MS_ROUTES`, `POLL_INTERVAL_MS_ACK`, ya en `AGENTS.md`).
-- Si una consulta falla (conexión, timeout), se loggea y se reintenta en
-  el siguiente ciclo — el proceso nunca se detiene por un fallo transitorio.
+- Este módulo expone funciones de **consulta puntual** (`getActiveRoutes`,
+  `getNewEvents`) — no implementa el ciclo de polling en sí (intervalos,
+  reintentos, logging ante fallo). Esa responsabilidad vive en
+  `specs/002`, cuyo worker de BullMQ llama a estas funciones en cada tick
+  de un job repetible — 001 no debe saber cuándo ni con qué frecuencia se
+  le llama (misma separación aplicada en el resto del proyecto).
 
 ## Criterios de aceptación
 - [ ] `getActiveRoutes` devuelve las rutas sembradas de prueba.
