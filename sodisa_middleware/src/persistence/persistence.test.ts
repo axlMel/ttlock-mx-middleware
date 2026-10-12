@@ -50,6 +50,25 @@ describe('RedisRouteStateStore', () => {
 
     await expect(redis.ttl(`route:${routeState.deviceId}`)).resolves.toBe(-1);
   });
+
+  test('lista estados, ignora otras llaves y refleja eliminaciones', async () => {
+    await expect(store.list()).resolves.toEqual([]);
+    const pending: RouteState = {
+      ...routeState,
+      deviceId: '868589060960328',
+      fsmState: 'PENDING',
+      lastCommandSentAt: null,
+      retryCount: 0,
+    };
+    await store.set(routeState.deviceId, routeState);
+    await store.set(pending.deviceId, pending);
+    await redis.set('cursor:reporte_cadenas', '4');
+
+    await expect(store.list()).resolves.toEqual(expect.arrayContaining([routeState, pending]));
+    expect((await store.list()).length).toBe(2);
+    await store.delete(routeState.deviceId);
+    await expect(store.list()).resolves.toEqual([pending]);
+  });
 });
 
 describe('RedisPollingCursorStore', () => {

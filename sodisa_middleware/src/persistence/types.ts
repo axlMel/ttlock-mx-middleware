@@ -11,6 +11,6 @@ export interface RouteState {
   routeId: string;
   currentSiteIndex: number;
   fsmState: FsmState;
-  lastCommandSentAt: string;
+  lastCommandSentAt: string | null;
   retryCount: number;
 }

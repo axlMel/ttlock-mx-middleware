@@ -2,91 +2,184 @@
 
 ## Objetivo
 Orquestar, mediante BullMQ, el avance de cada dispositivo a través de su
-ruta: enviar el comando de configuración del sitio actual, esperar su ACK,
-esperar entrada y salida de zona, avanzar al siguiente sitio, y cerrar la
-ruta con el comando de reset.
+ruta: configurar el sitio actual, confirmar su ACK, detectar su salida de
+zona, avanzar al siguiente sitio y cerrar la ruta desactivando la geocerca.
 
-## Fuera de alcance
-- Construcción/parseo de comandos → `specs/003`.
-- Consulta de eventos crudos → `specs/001`.
-- Persistencia de estado → `specs/004`.
-- Resolución de IP/puerto/modelo → `specs/005`.
-Este es el único módulo que conoce y usa los cuatro anteriores juntos.
+## Principio rector
+Este middleware corre sin interfaz ni operador. Por eso:
+- **Nunca se rinde:** un comando sin ACK se reintenta indefinidamente hasta
+  obtenerlo. No existe estado `FAILED`, ni pausa para operador, ni límite
+  terminal de intentos.
+- **Nunca salta un sitio:** la ruta avanza al siguiente sitio únicamente
+  tras el ACK y la salida de zona del sitio actual.
+- **Nunca se detiene por un error:** un fallo en un dispositivo o en una
+  consulta se registra y no afecta a otros dispositivos ni al siguiente
+  ciclo.
 
-## Máquina de estados
-```
-PENDING → CONFIGURING → AWAITING_ACK → IN_ZONE → AWAITING_EXIT_ALERT
-  → (siguiente sitio) PENDING → ... → COMPLETED
-                      └→ FAILED (si se agotan los reintentos de ACK)
-```
+## Fuera de alcance de esta spec
+- Armado/envío/parseo de comandos → `specs/003`.
+- Consulta de rutas y eventos crudos → `specs/001`.
+- Persistencia de estado y cursor → `specs/004`.
+- Resolución de modelo/IP/puerto → `specs/005`.
+Este es el único módulo que usa los cuatro juntos.
 
-### Transiciones
-- **PENDING → CONFIGURING**: hay un sitio pendiente en la ruta del dispositivo.
-- **CONFIGURING → AWAITING_ACK**: se envió `sendGeoCommand` (003) con el
-  comando del sitio actual. Se loggea `{timestamp, deviceId, routeId}` en
-  este punto (requisito de `AGENTS.md`).
-- **AWAITING_ACK → IN_ZONE**: el detector (001) reporta un evento `ack`
-  para ese IMEI. Si no llega, se reintenta el envío hasta `ACK_MAX_RETRIES`
-  veces (con `ACK_RETRY_BACKOFF_MS` entre cada uno, vía los reintentos de
-  BullMQ). Si se agotan los reintentos sin ACK, la transición final es
-  **AWAITING_ACK → FAILED** (estado terminal) — se loggea con
-  `{timestamp, deviceId, routeId}` igual que cualquier otra transición.
+## Estados
+| Estado | Significado |
+|---|---|
+| `PENDING` | El paso actual aún no se ha enviado. |
+| `CONFIGURING` | Se está enviando el comando del paso actual. |
+| `AWAITING_ACK` | Comando enviado; esperando ACK; reintentos en curso. |
+| `IN_ZONE` | ACK recibido, geocerca activa; esperando entrada o salida. (Nombre histórico: no implica que el equipo esté dentro.) |
+| `AWAITING_EXIT_ALERT` | Entrada registrada; esperando salida. |
+| `COMPLETED` | Ruta terminada y geocerca desactivada (ACK del reset recibido). |
 
-**Supuesto documentado — routeId:** el esquema local (y lo poco confirmado
-de la BD real) no tiene un identificador de ruta propio; se usa el IMEI
-como `routeId` bajo el supuesto de una sola ruta activa por dispositivo a
-la vez. Limitación conocida: si un dispositivo completara una ruta y
-recibiera una nueva asignación el mismo día, ambas se verían idénticas en
-logs. Se revisita cuando Paloma confirme el esquema real — si trae un ID
-de asignación propio, se adopta ahí sin tocar la interfaz de `specs/002`.
-- **IN_ZONE → AWAITING_EXIT_ALERT**: evento `zoneEvent` con `event='enter'`
-  para la geocerca del sitio actual (informativo, no bloqueante).
-- **AWAITING_EXIT_ALERT → PENDING (siguiente sitio) o COMPLETED**: evento
-  `zoneEvent` con `event='exit'`. Si quedan más sitios, avanza
-  `currentSiteIndex` y vuelve a `PENDING`; si era el último, envía el
-  comando de reset (`Mode=0`, `specs/003`) y pasa a `COMPLETED`.
+No existe ningún estado de fallo. Un "paso" es un sitio de la ruta o, al
+final, el **paso de reset**: `currentSiteIndex` igual al total de sitios
+(comando `Mode=0` de `specs/003`). El reset sigue el mismo ciclo que
+cualquier sitio, incluidos los reintentos de ACK.
 
-## Colas BullMQ
-- Una sola cola `site-lifecycle`; un job por `{deviceId, routeId, siteIndex}`.
-- Los reintentos de BullMQ (backoff configurado) implementan el reintento
-  de ACK — no se reimplementa lógica de reintento a mano.
-- Un worker separado consume los eventos del poller (001) y dispara
-  transiciones sobre el `RouteState` correspondiente (004).
+## Transiciones
+| # | Estado actual | Evento | Estado nuevo | Efecto |
+|---|---|---|---|---|
+| 1 | (IMEI sin `RouteState`) | asignación vigente detectada | `PENDING` (índice 0) | se crea el `RouteState` |
+| 2 | `PENDING` | paso listo | `CONFIGURING` | — |
+| 3 | `CONFIGURING` | comando enviado | `AWAITING_ACK` | envío UDP; inicia el lote 1 de reintentos |
+| 4 | `AWAITING_ACK` (sitio) | `ack` | `IN_ZONE` | se cancelan los reintentos pendientes |
+| 5 | `AWAITING_ACK` | lote agotado sin ACK | `AWAITING_ACK` (mismo paso) | log `warn` y se programa el siguiente lote |
+| 6 | `IN_ZONE` | `zoneEvent` enter | `AWAITING_EXIT_ALERT` | informativo |
+| 7 | `IN_ZONE` o `AWAITING_EXIT_ALERT` | `zoneEvent` exit, quedan sitios | `PENDING` (índice + 1) | — |
+| 8 | `IN_ZONE` o `AWAITING_EXIT_ALERT` | `zoneEvent` exit, era el último sitio | `CONFIGURING` (índice = total, paso de reset) | — |
+| 9 | `AWAITING_ACK` (paso de reset) | `ack` | `COMPLETED` | — |
+| 10 | cualquiera | evento que no corresponde al estado (ACK duplicado, entrada repetida, etc.) | sin cambio | se ignora; log `debug` |
 
-## Reglas de negocio
-- Toda transición de estado se loggea con `timestamp, deviceId, routeId`
-  (requisito ya definido en `AGENTS.md`).
-- Toda transición se persiste en `RouteState` (004) **antes** de continuar
-  — si el proceso se reinicia a medias, el estado en Redis debe permitir
-  retomar sin reprocesar sitios ya completados.
-- El comando de reset se envía siempre antes de marcar una ruta como
-  `COMPLETED`, incluso si hubo reintentos previos.
-- Este módulo es responsable de **programar** las consultas de `specs/001`
-  (`getActiveRoutes`, `getNewEvents`) con un intervalo adaptativo: rápido
-  mientras hay resultados nuevos, más espaciado (con tope) cuando no los
-  hay — y de loggear y continuar en el siguiente ciclo si una consulta
-  falla. **Este intervalo adaptativo es exclusivamente sobre la frecuencia
-  de consulta a la BD — no cancela, no falla y no tiene ninguna relación
-  con los reintentos de ACK descritos abajo.** 001 solo expone las
-  funciones, 002 decide cuándo y con qué frecuencia llamarlas.
+Cada reenvío exitoso conserva `AWAITING_ACK`, actualiza `lastCommandSentAt`
+e incrementa `retryCount`; no cambia el paso. Si el envío UDP falla, no se
+marca como enviado y BullMQ lo vuelve a intentar.
+
+La entrada es informativa: una salida se acepta desde `IN_ZONE` aunque no se
+haya visto la entrada.
+La creación inicial de la fila 1 acepta ausencia de estado y guarda
+`lastCommandSentAt: null`. El primer envío procesa `PENDING` o
+`CONFIGURING`; los reenvíos procesan `AWAITING_ACK`.
+
+## Reintentos de ACK (continuos, por lotes)
+- Al entrar en `AWAITING_ACK` se envía el comando; si no llega ACK, se
+  reenvía cada `ACK_RETRY_BACKOFF_MS` (espaciado fijo).
+- **`ACK_MAX_RETRIES` = número de reenvíos por lote**, además del envío
+  inicial. Agotar un lote **no es un fallo**: se emite un log `warn`
+  (lote agotado, con `deviceId`, `routeId`, `siteIndex` y número de lote)
+  y se inicia otro lote para el mismo paso, tras `ACK_RETRY_BACKOFF_MS`.
+  Los lotes se repiten indefinidamente hasta recibir el ACK.
+- El `warn` por lote es la señal operativa de que un equipo lleva tiempo
+  sin responder; no detiene nada.
+- Antes de cada reenvío se verifica el estado: si el paso ya no está en
+  `AWAITING_ACK` (llegó el ACK), no se reenvía.
+- Los ACK duplicados (producto de reenvíos) se ignoran (fila 10).
+- `retryCount` cuenta únicamente reenvíos del paso actual (sitio o reset),
+  acumulados entre lotes. El envío inicial no cuenta. Vale 0 en las filas
+  1, 7 y 8; se incrementa y persiste en cada reenvío. Es informativo: nunca
+  decide una pausa, fallo ni límite. Se incluye en cada log de reenvío y
+  en el `warn` de lote agotado.
+- Guía de configuración: `ACK_RETRY_BACKOFF_MS` debe ser mayor que la
+  latencia observada entre el envío y la aparición del ACK en el reporte de
+  cadenas más el intervalo de polling; si no, se reenviará sin necesidad.
+
+## Ciclo de vida de la ruta
+- Las filas vigentes se agrupan por IMEI y se ordenan por `orden`; el IMEI
+  se usa como `routeId` (supuesto, ver abajo).
+- Una asignación es **nueva** solo si su IMEI no tiene `RouteState`. Volver
+  a recibir las mismas filas vigentes no reinicia ni reconfigura nada.
+- Mientras el IMEI siga con filas vigentes, su `RouteState` se conserva
+  (incluso en `COMPLETED`), para no reiniciar la ruta en cada consulta.
+- Cuando el IMEI ya no aparece con filas vigentes y su estado es
+  `COMPLETED`, se elimina su `RouteState` (queda libre para una asignación
+  futura).
+
+## Polling
+- Dos consultas periódicas: rutas (`getActiveRoutes`, 001) y reporte de
+  cadenas (`getNewEvents`, 001). Un solo poller de `reporte_cadenas` atiende
+  ACKs y alertas (misma tabla, mismo cursor), por lo que usa un único
+  intervalo base: `POLL_INTERVAL_MS_ACK`. `POLL_INTERVAL_MS_ALERTS` queda
+  sin uso y se retira de `AGENTS.md`.
+- **Intervalo adaptativo:** con novedad, la siguiente consulta usa el
+  intervalo base; sin novedad, el retraso se duplica hasta un máximo de 5×
+  el intervalo base. Novedad en rutas = un IMEI nuevo; en reportes = al
+  menos una fila nueva.
+- **Excepción:** mientras algún `RouteState` esté en `AWAITING_ACK`,
+  `IN_ZONE` o `AWAITING_EXIT_ALERT`, el poller de reportes usa siempre el
+  intervalo base (de lo contrario se retrasaría la detección del ACK o de
+  la salida).
+- Un error de consulta se registra, aplica el mismo espaciado y el
+  siguiente ciclo se programa siempre.
+- El espaciado del polling es independiente de los reintentos de ACK.
+
+## Arranque y reinicio
+- **Sin cursor guardado** (primer arranque): antes de procesar rutas
+  nuevas, se drena el historial completo de `reporte_cadenas` descartando
+  sus eventos, para que ACKs antiguos no completen un sitio recién
+  configurado.
+- **Con cursor guardado:** se procesan los eventos desde el cursor
+  (incluye lo ocurrido mientras el proceso estuvo detenido).
+- Tras cualquier arranque ninguna ruta queda detenida: cada `RouteState`
+  en `PENDING`, `CONFIGURING` o `AWAITING_ACK` retoma el envío/reintentos
+  de su paso actual; `IN_ZONE` y `AWAITING_EXIT_ALERT` siguen esperando
+  eventos; `COMPLETED` no requiere acción. No deben duplicarse cadenas de
+  reintentos ya activas.
+- Cada transición se persiste en `RouteState` antes de ejecutar el
+  siguiente efecto (envío, reencolado).
+
+## Trazabilidad
+- Cada transición y cada comando enviado (incluidos reenvíos y reset):
+  `timestamp`, `deviceId`, `routeId`.
+- Cada lote agotado: `warn` con además `siteIndex` y número de lote.
+- Cada ciclo de polling: fuente, cantidad de resultados y próximo retraso.
 
 ## Criterios de aceptación
-- [ ] Una simulación de ruta de 2 sitios (con fakes de 001, 003 y 005 —
-      004 puede ser real con `ioredis-mock`) pasa por todos los estados
-      en el orden correcto.
-- [ ] Un ACK que nunca llega dispara exactamente `ACK_MAX_RETRIES`
-      reintentos y luego queda marcado como fallido — nunca se cuelga
-      indefinidamente.
-- [ ] El comando de reset se verifica enviado al completar la última ruta.
-- [ ] Cada transición queda loggeada con los 3 campos requeridos.
-- [ ] La lógica de FSM (transiciones) es testeable **sin BullMQ real ni
-      Redis real** — solo con fakes de sus dependencias (principio III).
-- [ ] Las consultas de 001 se disparan automáticamente a los intervalos
-      configurados, sin intervención manual, y un fallo transitorio en
-      una consulta se loggea y no detiene el ciclo siguiente.
+- [ ] Ruta de 2 sitios con fakes: pasa en orden por ACK, entrada, salida,
+      avance, paso de reset, ACK del reset y `COMPLETED`.
+- [ ] Con `ACK_MAX_RETRIES` pequeño y varios lotes sin ACK: nunca aparece
+      un estado de fallo, nunca se salta el sitio, hay un `warn` por lote
+      agotado, y al llegar el ACK la ruta continúa con normalidad.
+- [ ] Al llegar el ACK se detienen los reenvíos; los ACK duplicados y las
+      entradas repetidas se ignoran.
+- [ ] Una salida se acepta desde `IN_ZONE` sin entrada previa.
+- [ ] Un equipo que nunca responde no bloquea ni retrasa la ruta de otro.
+- [ ] Rutas: las mismas filas vigentes repetidas no reinician un
+      `RouteState` existente (tampoco uno `COMPLETED`); un IMEI que deja de
+      estar vigente con estado `COMPLETED` pierde su `RouteState`.
+- [ ] Polling: sin novedad el retraso se duplica hasta 5×; con novedad
+      vuelve al base; un error se registra y el ciclo sigue; con equipos
+      esperando eventos el poller de reportes se mantiene en el base.
+- [ ] Arranque sin cursor: el historial se drena y un ACK antiguo no
+      completa un sitio nuevo.
+- [ ] Reinicio: un `RouteState` en `AWAITING_ACK` reanuda sus reintentos
+      sin duplicar cadenas.
+- [ ] Cada transición, comando y lote agotado queda registrado con los
+      campos requeridos.
+- [ ] La lógica de transición es testeable sin BullMQ, Redis ni red
+      (principio III).
 
 ## Fuera de alcance de esta iteración
-- Procesamiento paralelo de más de 1-2 dispositivos simultáneos (funciona
-  por diseño, pero no se prueba a esa escala todavía).
-- Configuración del panel de monitoreo BullMQ (`npm run queue:board`, ya
-  referenciado en `AGENTS.md`, pero fuera del alcance de esta spec).
+- Asignaciones que se cancelan o cambian a mitad de ruta.
+- Intervención manual o reanudación: no existe pausa.
+- Prueba a escala de más de 1-2 dispositivos simultáneos.
+- Panel de monitoreo BullMQ (`npm run queue:board`).
+
+## Supuestos y riesgos conocidos (no bloquean esta iteración)
+- **routeId = IMEI:** hay una sola ruta activa por dispositivo en el esquema
+  local. Si un equipo recibiera una nueva asignación tras completar una,
+  ambas se verían iguales en los logs. Se revisa cuando Paloma confirme el
+  esquema real.
+- **Primer estado de la geocerca:** el comando usa `State Mode 0`, que según
+  el manual reporta el estado la primera vez que se obtiene. Un equipo
+  configurado estando fuera de la zona podría emitir una salida inmediata y
+  adelantar el sitio. Validar en la prueba de campo; si ocurre, se corrige
+  en `specs/003` (State Mode 1), no aquí.
+- **ACK y salida tardíos:** 003 no correlaciona el ACK con un comando
+  particular. Se acepta por IMEI solo en `AWAITING_ACK`; un ACK muy tardío
+  podría atribuirse al paso siguiente. La geocerca usa el mismo ID en cada
+  sitio; una salida duplicada o tardía también podría completar el sitio
+  siguiente. Validar ambos casos en campo; no se modifica 001 ni 003 aquí.
+- **Cursor adelantado:** 001 guarda el cursor al devolver un lote, antes de
+  que 002 aplique sus eventos. Una caída entre ambos pasos podría perder
+  eventos; se mantiene el contrato actual de 001 en esta iteración.

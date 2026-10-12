@@ -21,7 +21,7 @@ Este proyecto se desarrolla bajo SDD. **Ningún cambio de comportamiento se impl
 | ID | Módulo | Estado |
 |---|---|---|
 | 001 | event-detectors | Implementado (esquema local, pendiente confirmar real) |
-| 002 | queue-orchestrator (FSM) | En diseño |
+| 002 | queue-orchestrator (FSM) | Implementado |
 | 003 | queclink-protocol (UDP @Track, multi-modelo) | Implementado |
 | 004 | state-persistence (cursor de polling en Redis) | Implementado |
 | 005 | device-directory (resolución IMEI → modelo/ip/puerto) | Implementado (esquema local, pendiente confirmar real) |
@@ -47,6 +47,7 @@ Este proyecto se desarrolla bajo SDD. **Ningún cambio de comportamiento se impl
 `PENDING → CONFIGURING → AWAITING_ACK → IN_ZONE → AWAITING_EXIT_ALERT → (siguiente sitio) PENDING`
  
 Al finalizar el último sitio de una ruta, el dispositivo se reconfigura con la geocerca desactivada (`Mode=0`) — ver `specs/003-queclink-protocol/spec.md` para el comando exacto.
+Los reintentos de ACK continúan por lotes hasta obtener respuesta; no existe estado `FAILED` ni pausa para operador.
  
 Detalle completo de transiciones, timeouts y reintentos: ver `specs/002-queue-orchestrator/spec.md`.
  
@@ -71,7 +72,6 @@ DATABASE_URL=
 REDIS_URL=
 POLL_INTERVAL_MS_ROUTES=
 POLL_INTERVAL_MS_ACK=
-POLL_INTERVAL_MS_ALERTS=
 ACK_MAX_RETRIES=
 ACK_RETRY_BACKOFF_MS=
 ```

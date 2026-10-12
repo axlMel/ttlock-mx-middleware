@@ -8,4 +8,7 @@
 - [x] Confirmar `npm test` en verde y el linter sin errores.
 - [x] Agregar en `docs/architecture.md` el requisito de `appendonly yes` en la configuración de Redis para despliegue.
 - [x] Marcar esta lista como completa y actualizar el estado de 004 en `AGENTS.md` a "Implementado".
+- [x] Ampliar `RouteState` para admitir `lastCommandSentAt: null` antes del primer envío.
+- [x] Añadir `RouteStateStore.list(): Promise<RouteState[]>` mediante `SCAN route:*`.
+- [x] Probar `list()` con cero, varios y estados eliminados usando `ioredis-mock`.
  

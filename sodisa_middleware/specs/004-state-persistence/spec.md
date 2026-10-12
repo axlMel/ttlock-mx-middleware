@@ -23,14 +23,14 @@ lectura (principio V de la constitución).
 ```typescript
 type FsmState =
   | 'PENDING' | 'CONFIGURING' | 'AWAITING_ACK'
-  | 'IN_ZONE' | 'AWAITING_EXIT_ALERT' | 'COMPLETED' | 'FAILED';
+  | 'IN_ZONE' | 'AWAITING_EXIT_ALERT' | 'COMPLETED';
 
 interface RouteState {
   deviceId: string;      // IMEI
   routeId: string;
   currentSiteIndex: number;
   fsmState: FsmState;
-  lastCommandSentAt: string; // ISO timestamp
+  lastCommandSentAt: string | null; // null antes del primer envío; después, ISO timestamp
   retryCount: number;
 }
 ```
@@ -41,6 +41,7 @@ interface RouteStateStore {
   get(deviceId: string): Promise<RouteState | null>;
   set(deviceId: string, state: RouteState): Promise<void>;
   delete(deviceId: string): Promise<void>; // al completar o cancelar una ruta
+  list(): Promise<RouteState[]>; // todos los estados persistidos
 }
 
 interface PollingCursorStore {
@@ -61,6 +62,9 @@ interface PollingCursorStore {
   — tampoco es un error.
 - No se aplica TTL a `RouteState` en esta iteración: una ruta puede tardar
   en completarse y expirarla accidentalmente sería peor que no expirarla.
+- `list()` devuelve todos los `RouteState` guardados, o `[]` si no hay ninguno;
+  permite al orquestador reconstruir equipos pendientes y limpiar rutas
+  completadas tras reiniciar, sin consultar ni escribir la BD externa.
 - Redis debe estar configurado con persistencia a disco (`appendonly yes`)
   para que el cursor y el estado sobrevivan a un reinicio — esto es un
   requisito de infraestructura, documentado en `docs/architecture.md`, no
@@ -73,6 +77,8 @@ interface PollingCursorStore {
       objeto guardado.
 - [ ] `RouteStateStore.delete` elimina el estado; un `get` posterior vuelve
       a devolver `null`.
+- [ ] `RouteStateStore.list` devuelve los estados guardados, refleja las
+      eliminaciones y devuelve `[]` cuando no hay estados.
 - [ ] `PollingCursorStore.get`/`set` tienen el mismo comportamiento de
       "no existe → null" para cursores.
 - [ ] Ningún test de este módulo requiere una conexión a PostgreSQL.

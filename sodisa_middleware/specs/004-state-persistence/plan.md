@@ -15,6 +15,9 @@ src/persistence/
   añade una pieza móvil adicional al proyecto (principio I).
 - **Serialización:** `JSON.stringify`/`JSON.parse` para `RouteState`. El
   cursor es un string plano, sin serialización.
+- **Enumeración de estados:** `RouteStateStore.list()` recorre las llaves
+  `route:*` con `SCAN` y lee sus valores; evita `KEYS` y no amplía el acceso
+  a la BD externa. `lastCommandSentAt` es `null` hasta el primer envío.
 - **Persistencia de Redis (`appendonly yes`) es responsabilidad de
   infraestructura, no de este código.** Se documenta como requisito de
   despliegue en `docs/architecture.md` para que Ever lo configure en el
@@ -35,6 +38,7 @@ src/persistence/
   3. Eliminar un estado y confirmar que el siguiente `get` es `null`.
   4. Guardar y leer un cursor.
   5. Leer un cursor de una fuente sin valor guardado → `null`.
+  6. Listar varios estados, comprobar lista vacía y reflejar una eliminación.
 ## Alternativas descartadas
 - **SQLite local:** descartado. Ya existe Redis por BullMQ; añadir SQLite
   sería una segunda pieza de persistencia sin necesidad real (principio I).
