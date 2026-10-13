@@ -3,9 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=20"
+    "node": ">=20.6"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "npm run build && node --env-file=.env dist/app/main.js",
+    "prestart": "npm run build",
+    "start": "node dist/app/main.js",
     "test": "jest --runInBand",
     "lint": "eslint src && tsc --noEmit"
   },

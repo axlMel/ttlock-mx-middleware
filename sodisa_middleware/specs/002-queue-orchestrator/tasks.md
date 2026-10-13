@@ -18,3 +18,6 @@
 - [x] Confirmar `npm test` (pruebas nuevas de 002 y todas las existentes) y `npm run lint` sin errores.
 - [x] En `AGENTS.md`: retirar `POLL_INTERVAL_MS_ALERTS` (sin uso), añadir en la sección de la FSM que los reintentos de ACK son continuos y que no existe estado `FAILED` ni pausa para operador, y actualizar el estado de 002 a "Implementado".
 - [x] Marcar esta lista como completa.
+- [x] Si falla `orchestrator.start()` dentro de `startBullWorker`, cerrar
+      worker, cola y conexión Redis; probar el caso con fakes, sin modificar
+      la política de reintentos ni las transiciones.

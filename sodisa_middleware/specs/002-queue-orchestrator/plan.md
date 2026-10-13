@@ -67,6 +67,10 @@ src/orchestrator/
 - **Dependencias:** añadir `bullmq` a la raíz y actualizar el lockfile. La
   conexión de `ioredis` para BullMQ usa `maxRetriesPerRequest: null`
   (requisito de BullMQ para workers).
+- **Limpieza en fallo de arranque:** `startBullWorker` cierra worker y cola
+  e interrumpe su conexión Redis si falla `orchestrator.start()` antes de
+  devolver el manejador. Los cierres se intentan todos aunque uno falle;
+  la lógica de jobs y transiciones no cambia.
 
 ## Testing
 - `fsm.test.ts`: tabla de casos, una por fila de la tabla de transiciones

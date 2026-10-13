@@ -127,6 +127,10 @@ La creación inicial de la fila 1 acepta ausencia de estado y guarda
   reintentos ya activas.
 - Cada transición se persiste en `RouteState` antes de ejecutar el
   siguiente efecto (envío, reencolado).
+- Si falla la preparación inicial del worker antes de devolver el manejador
+  de cierre al proceso, se liberan el worker, la cola y la conexión Redis
+  que creó 002. Se conserva el error de arranque para que el proceso pueda
+  informarlo y cerrar los recursos de los demás módulos.
 
 ## Trazabilidad
 - Cada transición y cada comando enviado (incluidos reenvíos y reset):
@@ -183,3 +187,9 @@ La creación inicial de la fila 1 acepta ausencia de estado y guarda
 - **Cursor adelantado:** 001 guarda el cursor al devolver un lote, antes de
   que 002 aplique sus eventos. Una caída entre ambos pasos podría perder
   eventos; se mantiene el contrato actual de 001 en esta iteración.
+- **Reinicio sin cursor y con jobs conservados:** si `reporte_cadenas` está
+  vacío, el drenaje no crea cursor. Tras reiniciar, un `poll-reports` anterior
+  puede seguir en BullMQ y el arranque programa otro drenaje; esto puede
+  dejar dos ciclos de polling de reportes. Para una simulación limpia se
+  parte de Redis vacío. Deduplicar este caso requiere una corrección futura
+  en 002; el punto de entrada de 006 no altera la cola.

@@ -343,6 +343,24 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
   };
 }
 
+async function closeBullResources(
+  worker: Worker<JobData> | undefined,
+  queue: Queue<JobData> | undefined,
+  connection: Redis,
+): Promise<void> {
+  const failures: unknown[] = [];
+  if (worker) {
+    try { await worker.close(); } catch (error) { failures.push(error); }
+  }
+  if (queue) {
+    try { await queue.close(); } catch (error) { failures.push(error); }
+  }
+  try { connection.disconnect(); } catch (error) { failures.push(error); }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'No se pudieron cerrar todos los recursos de BullMQ.');
+  }
+}
+
 export async function startBullWorker(
   dependencies: Omit<OrchestratorDependencies, 'queue' | 'protocol' | 'logger' | 'config'> & {
     redisUrl: string;
@@ -352,52 +370,65 @@ export async function startBullWorker(
   },
 ): Promise<{ close(): Promise<void>; orchestrator: SiteLifecycleOrchestrator }> {
   const connection = new Redis(dependencies.redisUrl, { maxRetriesPerRequest: null });
-  const queue = new Queue<JobData>(QUEUE_NAME, { connection });
-  const pendingJobs = async () => queue.getJobs(['waiting', 'delayed', 'active']);
-  const adapter: JobQueue = {
-    add: async (name, data, options) => { await queue.add(name, data, options); },
-    hasPending: async (name, deviceId, siteIndex) =>
-      (await pendingJobs()).some((job) => job.name === name &&
-        (deviceId === undefined || job.data.deviceId === deviceId) &&
-        (siteIndex === undefined || job.data.siteIndex === siteIndex)),
-    cancelPending: async (name, deviceId, siteIndex) => {
-      for (const job of await queue.getJobs(['waiting', 'delayed'])) {
-        if (job.name === name && job.data.deviceId === deviceId && job.data.siteIndex === siteIndex) {
-          await job.remove();
+  let queue: Queue<JobData> | undefined;
+  let worker: Worker<JobData> | undefined;
+  try {
+    queue = new Queue<JobData>(QUEUE_NAME, { connection });
+    const activeQueue = queue;
+    const pendingJobs = async () => activeQueue.getJobs(['waiting', 'delayed', 'active']);
+    const adapter: JobQueue = {
+      add: async (name, data, options) => { await activeQueue.add(name, data, options); },
+      hasPending: async (name, deviceId, siteIndex) =>
+        (await pendingJobs()).some((job) => job.name === name &&
+          (deviceId === undefined || job.data.deviceId === deviceId) &&
+          (siteIndex === undefined || job.data.siteIndex === siteIndex)),
+      cancelPending: async (name, deviceId, siteIndex) => {
+        for (const job of await activeQueue.getJobs(['waiting', 'delayed'])) {
+          if (job.name === name && job.data.deviceId === deviceId && job.data.siteIndex === siteIndex) {
+            await job.remove();
+          }
         }
-      }
-    },
-  };
-  const logger = dependencies.logger ?? console;
-  const orchestrator = new SiteLifecycleOrchestrator({
-    ...dependencies,
-    queue: adapter,
-    protocol: dependencies.protocol ?? { buildGeoCommand, parseMessage, sendGeoCommand },
-    logger,
-    config: dependencies.config ?? configFromEnv(),
-  });
-  const worker = new Worker<JobData>(QUEUE_NAME, async (job: Job<JobData>) => {
-    await orchestrator.processJob({
-      name: job.name as JobName,
-      data: job.data,
-      attemptsMade: job.attemptsMade,
-      attempts: job.opts.attempts ?? 1,
+      },
+    };
+    const logger = dependencies.logger ?? console;
+    const orchestrator = new SiteLifecycleOrchestrator({
+      ...dependencies,
+      queue: adapter,
+      protocol: dependencies.protocol ?? { buildGeoCommand, parseMessage, sendGeoCommand },
+      logger,
+      config: dependencies.config ?? configFromEnv(),
     });
-  }, { connection, concurrency: 4 });
-  worker.on('failed', (job, error) => {
-    if (!job) return;
-    void orchestrator.onJobFailed({
-      name: job.name as JobName,
-      data: job.data,
-      attemptsMade: job.attemptsMade,
-      attempts: job.opts.attempts ?? 1,
-    }, error).catch((failure) => {
-      logger.error('Falló la programación del siguiente lote.', { timestamp: new Date().toISOString(), error: String(failure) });
+    worker = new Worker<JobData>(QUEUE_NAME, async (job: Job<JobData>) => {
+      await orchestrator.processJob({
+        name: job.name as JobName,
+        data: job.data,
+        attemptsMade: job.attemptsMade,
+        attempts: job.opts.attempts ?? 1,
+      });
+    }, { connection, concurrency: 4 });
+    const activeWorker = worker;
+    activeWorker.on('failed', (job, error) => {
+      if (!job) return;
+      void orchestrator.onJobFailed({
+        name: job.name as JobName,
+        data: job.data,
+        attemptsMade: job.attemptsMade,
+        attempts: job.opts.attempts ?? 1,
+      }, error).catch((failure) => {
+        logger.error('Falló la programación del siguiente lote.', { timestamp: new Date().toISOString(), error: String(failure) });
+      });
     });
-  });
-  await orchestrator.start();
-  return {
-    orchestrator,
-    close: async () => { await worker.close(); await queue.close(); connection.disconnect(); },
-  };
+    await orchestrator.start();
+    return {
+      orchestrator,
+      close: () => closeBullResources(activeWorker, activeQueue, connection),
+    };
+  } catch (error) {
+    try {
+      await closeBullResources(worker, queue, connection);
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], 'Falló el arranque y la limpieza de BullMQ.');
+    }
+    throw error;
+  }
 }

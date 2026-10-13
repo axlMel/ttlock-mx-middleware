@@ -270,3 +270,35 @@ test('lee los intervalos y reintentos desde el entorno y rechaza valores ausente
   expect(() => configFromEnv({ POLL_INTERVAL_MS_ROUTES: '100' }))
     .toThrow('POLL_INTERVAL_MS_ACK');
 });
+
+test('libera worker, cola y Redis si falla el arranque de BullMQ', async () => {
+  jest.resetModules();
+  const closeWorker = jest.fn(async () => undefined);
+  const closeQueue = jest.fn(async () => undefined);
+  const disconnect = jest.fn();
+  jest.doMock('bullmq', () => ({
+    Queue: jest.fn().mockImplementation(() => ({ close: closeQueue })),
+    Worker: jest.fn().mockImplementation(() => ({ close: closeWorker, on: jest.fn() })),
+  }));
+  jest.doMock('ioredis', () => ({
+    __esModule: true,
+    default: jest.fn().mockImplementation(() => ({ disconnect })),
+  }));
+  const isolated = await import('./worker');
+  jest.spyOn(isolated.SiteLifecycleOrchestrator.prototype, 'start')
+    .mockRejectedValueOnce(new Error('fallo de arranque simulado'));
+  await expect(isolated.startBullWorker({
+    redisUrl: 'redis://fake',
+    routeDetector: { getActiveRoutes: async () => [] },
+    chainReportDetector: { getNewEvents: async () => [] },
+    deviceDirectory: { getDeviceInfo: async (imei) => ({ imei, model: 'GV300W', ip: '127.0.0.1', port: 55010 }) },
+    stateStore: { get: async () => null, set: async () => undefined, delete: async () => undefined, list: async () => [] },
+    cursorStore: { get: async () => null, set: async () => undefined },
+    config: { pollIntervalRoutesMs: 10, pollIntervalAckMs: 10, ackMaxRetries: 1, ackRetryBackoffMs: 10 },
+  })).rejects.toThrow('fallo de arranque simulado');
+  expect(closeWorker).toHaveBeenCalledTimes(1);
+  expect(closeQueue).toHaveBeenCalledTimes(1);
+  expect(disconnect).toHaveBeenCalledTimes(1);
+  jest.dontMock('bullmq');
+  jest.dontMock('ioredis');
+});
