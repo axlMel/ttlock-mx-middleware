@@ -1,0 +1,14 @@
+# Entorno virtual
+.venv/
+
+# Caché de Python y de pytest
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Datos locales de la app
+habits.json
+habits.json.tmp
