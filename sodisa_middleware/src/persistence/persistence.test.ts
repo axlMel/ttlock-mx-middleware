@@ -1,99 +1,112 @@
 import type Redis from 'ioredis';
 import RedisMock from 'ioredis-mock';
-import { RedisPollingCursorStore } from './cursorStore';
 import { RedisRouteStateStore } from './routeStateStore';
-import type { RouteState } from './types';
+import { RedisChainCursorStore } from './chainCursorStore';
+import { RedisCatalogCacheStore } from './catalogCacheStore';
+import { routeKey, deviceRouteKey, chainCursorKey, catalogKey } from './keys';
+import { CorruptStateError, type RouteState, type ChainCursor, type CatalogEntry, type FsmState } from './types';
 
-const routeState: RouteState = {
-  deviceId: '863457050476769',
-  routeId: 'route-42',
-  currentSiteIndex: 2,
-  fsmState: 'AWAITING_ACK',
-  lastCommandSentAt: '2026-09-21T22:09:39.000Z',
-  retryCount: 1,
+const state: RouteState = {
+  assignmentId: 42, companyId: 364, apiCompanyId: 2, unitId: 81,
+  deviceId: 9001, model: 'GV300W', catalogRouteId: 17, routeType: 0,
+  fsmState: 'AWAITING_ACK', currentPointId: 5, completedPointIds: [3],
+  stepSeq: 2, transmissionSeq: 1, retryCount: 0,
+  pendingRequest: { idempotencyKey: 'key-42', body: { companyId: 2, unitId: '81', comando: 'AT+GTGEO$' } },
+  ackDeadline: '2026-11-16T12:01:00.000Z', closing: null,
+  startedAt: '2026-11-16T12:00:00.000Z', updatedAt: '2026-11-16T12:00:01.000Z',
 };
 
-describe('RedisRouteStateStore', () => {
-  let redis: Redis;
-  let store: RedisRouteStateStore;
+let redis: Redis;
+beforeEach(async () => {
+  redis = new RedisMock();
+  await redis.flushall();
+});
+afterEach(() => redis.disconnect());
 
-  beforeEach(async () => {
-    redis = new RedisMock();
-    await redis.flushall();
-    store = new RedisRouteStateStore(redis);
-  });
-
-  afterEach(() => {
-    redis.disconnect();
-  });
-
-  test('devuelve null cuando no hay ruta activa', async () => {
-    await expect(store.get(routeState.deviceId)).resolves.toBeNull();
-  });
-
-  test('guarda y lee el mismo RouteState en la llave del dispositivo', async () => {
-    await store.set(routeState.deviceId, routeState);
-
-    await expect(store.get(routeState.deviceId)).resolves.toEqual(routeState);
-    await expect(redis.get(`route:${routeState.deviceId}`)).resolves.toBe(JSON.stringify(routeState));
-  });
-
-  test('elimina el estado y el siguiente get devuelve null', async () => {
-    await store.set(routeState.deviceId, routeState);
-    await store.delete(routeState.deviceId);
-
-    await expect(store.get(routeState.deviceId)).resolves.toBeNull();
-  });
-
-  test('no aplica TTL al estado de la ruta', async () => {
-    await store.set(routeState.deviceId, routeState);
-
-    await expect(redis.ttl(`route:${routeState.deviceId}`)).resolves.toBe(-1);
-  });
-
-  test('lista estados, ignora otras llaves y refleja eliminaciones', async () => {
-    await expect(store.list()).resolves.toEqual([]);
-    const pending: RouteState = {
-      ...routeState,
-      deviceId: '868589060960328',
-      fsmState: 'PENDING',
-      lastCommandSentAt: null,
-      retryCount: 0,
-    };
-    await store.set(routeState.deviceId, routeState);
-    await store.set(pending.deviceId, pending);
-    await redis.set('cursor:reporte_cadenas', '4');
-
-    await expect(store.list()).resolves.toEqual(expect.arrayContaining([routeState, pending]));
-    expect((await store.list()).length).toBe(2);
-    await store.delete(routeState.deviceId);
-    await expect(store.list()).resolves.toEqual([pending]);
-  });
+test('guarda, enumera y borra rutas con su índice de dispositivo, sin TTL', async () => {
+  const store = new RedisRouteStateStore(redis);
+  expect(await store.get(42)).toBeNull();
+  expect(await store.getByDevice(9001)).toBeNull();
+  expect(await store.list()).toEqual([]);
+  await store.set(state);
+  expect(await store.get(42)).toEqual(state);
+  expect(await store.getByDevice(9001)).toEqual(state);
+  expect(await redis.get(deviceRouteKey(9001))).toBe('42');
+  expect(await redis.ttl(routeKey(42))).toBe(-1);
+  expect(await redis.ttl(deviceRouteKey(9001))).toBe(-1);
+  await store.delete(42);
+  expect(await store.get(42)).toBeNull();
+  expect(await store.getByDevice(9001)).toBeNull();
+  expect(await redis.get(deviceRouteKey(9001))).toBeNull();
 });
 
-describe('RedisPollingCursorStore', () => {
-  let redis: Redis;
-  let store: RedisPollingCursorStore;
+test('list filtra llaves ajenas y conserva routeType', async () => {
+  const store = new RedisRouteStateStore(redis);
+  const second: RouteState = { ...state, assignmentId: 43, deviceId: 9002, routeType: 1 };
+  await store.set(state);
+  await store.set(second);
+  await redis.set('route:invalid', JSON.stringify(state));
+  await redis.set('device-route:999', '42');
+  expect(await store.list()).toEqual(expect.arrayContaining([state, second]));
+  expect((await store.list())).toHaveLength(2);
+  expect((await store.get(43))?.routeType).toBe(1);
+  await store.delete(42);
+  expect(await store.list()).toEqual([second]);
+});
 
-  beforeEach(async () => {
-    redis = new RedisMock();
-    await redis.flushall();
-    store = new RedisPollingCursorStore(redis);
-  });
+test('set actualiza el índice cuando cambia el dispositivo', async () => {
+  const store = new RedisRouteStateStore(redis);
+  await store.set(state);
+  await store.set({ ...state, deviceId: 9002 });
+  expect(await store.getByDevice(9001)).toBeNull();
+  expect((await store.getByDevice(9002))?.assignmentId).toBe(42);
+});
 
-  afterEach(() => {
-    redis.disconnect();
-  });
+test('getByDevice devuelve null si el índice apunta a ruta ausente', async () => {
+  await redis.set(deviceRouteKey(9001), '42');
+  expect(await new RedisRouteStateStore(redis).getByDevice(9001)).toBeNull();
+});
 
-  test('devuelve null para una fuente sin cursor', async () => {
-    await expect(store.get('reporte_cadenas')).resolves.toBeNull();
-  });
+test('JSON corrupto lanza en get y getByDevice; list avisa, omite y continúa', async () => {
+  const onCorrupt = jest.fn();
+  const store = new RedisRouteStateStore(redis, { onCorrupt });
+  await store.set(state);
+  await redis.set(routeKey(43), '{');
+  await redis.set(deviceRouteKey(9002), '43');
+  await expect(store.get(43)).rejects.toMatchObject({ name: 'CorruptStateError', key: routeKey(43) });
+  await expect(store.getByDevice(9002)).rejects.toBeInstanceOf(CorruptStateError);
+  expect(await store.list()).toEqual([state]);
+  expect(onCorrupt).toHaveBeenCalledWith(routeKey(43), expect.any(CorruptStateError));
+});
 
-  test('guarda y lee el cursor como string plano por fuente', async () => {
-    await store.set('reporte_cadenas', '12345');
+test('cursor por dispositivo guarda, lee y borra sin TTL', async () => {
+  const store = new RedisChainCursorStore(redis);
+  const cursor: ChainCursor = { partition: '202646', dtTrama: '2026-11-16 12:00:00.123456', recentIds: [1, 2] };
+  expect(await store.get(9001)).toBeNull();
+  await store.set(9001, cursor);
+  expect(await store.get(9001)).toEqual(cursor);
+  expect(await store.get(9002)).toBeNull();
+  expect(await redis.ttl(chainCursorKey(9001))).toBe(-1);
+  await store.delete(9001);
+  expect(await store.get(9001)).toBeNull();
+});
 
-    await expect(store.get('reporte_cadenas')).resolves.toBe('12345');
-    await expect(redis.get('cursor:reporte_cadenas')).resolves.toBe('12345');
-    await expect(store.get('otra_fuente')).resolves.toBeNull();
-  });
+test('caché por entidad e id guarda, lee y borra sin TTL', async () => {
+  const store = new RedisCatalogCacheStore(redis);
+  const entry: CatalogEntry<{ radius: number }> = { value: { radius: 50 }, dtModificacion: null, fetchedAt: '2026-11-16T12:00:00.000Z' };
+  expect(await store.get('site', 1)).toBeNull();
+  await store.set('site', 1, entry);
+  expect(await store.get<{ radius: number }>('site', 1)).toEqual(entry);
+  expect(await store.get('route', 1)).toBeNull();
+  expect(await redis.ttl(catalogKey('site', 1))).toBe(-1);
+  await store.delete('site', 1);
+  expect(await store.get('site', 1)).toBeNull();
+});
+
+test('FsmState excluye estados terminales de fallo y pausa', () => {
+  // @ts-expect-error FAILED no pertenece a FsmState.
+  const failed: FsmState = 'FAILED';
+  // @ts-expect-error PAUSED no pertenece a FsmState.
+  const paused: FsmState = 'PAUSED';
+  expect([failed, paused]).not.toContain(state.fsmState);
 });

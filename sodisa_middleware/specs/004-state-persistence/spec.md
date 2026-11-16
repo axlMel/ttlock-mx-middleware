@@ -1,86 +1,101 @@
-# Spec 004 — Persistencia de estado local (Redis)
+# Spec 004 — Persistencia local (Redis)
 
 ## Objetivo
-Persistir localmente el progreso de cada dispositivo a través de su ruta
-(`RouteState`, usado por la FSM) y el cursor de lectura sobre el reporte de
-cadenas (`PollingCursor`), de forma que ambos sobrevivan a un reinicio del
-proceso o del contenedor, sin tocar jamás la base de datos externa de solo
-lectura (principio V de la constitución).
-
-## Alcance
-- Almacenamiento y lectura de `RouteState` por dispositivo.
-- Almacenamiento y lectura de `PollingCursor` por fuente de datos (hoy:
-  `reporte_cadenas`; el diseño admite más fuentes sin cambios si en el
-  futuro se agrega paginación a la tabla de rutas).
+Guardar localmente, de forma que sobreviva a reinicios, el estado de cada ruta en
+curso, el cursor de lectura de tramas por equipo y la caché de catálogo. Nunca se
+escribe en la BD externa (principio V).
 
 ## Fuera de alcance
-- Conexión a PostgreSQL → `specs/001-event-detectors` y `specs/005-device-directory`.
-- Lógica de transición de estados de la FSM → `specs/002-queue-orchestrator`.
-  Este módulo solo guarda y devuelve el estado; no decide cuándo cambia.
+- Lógica de transiciones → `specs/002`.
+- Consultas a la BD → `specs/001` y `specs/005`.
+- Auditoría de comandos → `specs/007`.
 
 ## Modelo de datos
-
 ```typescript
 type FsmState =
   | 'PENDING' | 'CONFIGURING' | 'AWAITING_ACK'
   | 'IN_ZONE' | 'AWAITING_EXIT_ALERT' | 'COMPLETED';
 
-interface RouteState {
-  deviceId: string;      // IMEI
-  routeId: string;
-  currentSiteIndex: number;
-  fsmState: FsmState;
-  lastCommandSentAt: string | null; // null antes del primer envío; después, ISO timestamp
-  retryCount: number;
+interface PendingRequest {
+  idempotencyKey: string;
+  body: { companyId: number; unitId: string; comando: string };
 }
+
+interface RouteState {
+  assignmentId: number;          // es el routeId de logs y auditoría
+  companyId: number;             // empresa de la plataforma
+  apiCompanyId: number;          // companyId de la API de comandos
+  unitId: number;
+  deviceId: number;
+  model: 'GV300W' | 'GV310LAU';
+  catalogRouteId: number;        // int_idruta
+  routeType: 0 | 1;              // int_tipo; en la v1 siempre 0 (las rutas tipo 1 no crean estado)
+  fsmState: FsmState;
+  currentPointId: number | null; // tbl_punto_ruta.int_id; null en el paso de reset
+  completedPointIds: number[];
+  stepSeq: number;               // contador de pasos; su hex de 4 dígitos es el serial
+  transmissionSeq: number;       // transmisiones del paso actual (la primera es 1)
+  retryCount: number;            // retransmisiones del paso (solo informativo)
+  pendingRequest: PendingRequest | null; // guardada ANTES de llamar a la API
+  ackDeadline: string | null;    // ISO: fin de la ventana de ACK de la última transmisión aceptada
+  closing: null | { reason: 'ROUTE_DONE' | 'ASSIGNMENT_ENDED'; finalEstado: number | null };
+  startedAt: string;
+  updatedAt: string;
+}
+
+interface ChainCursor {
+  partition: string;             // 'YYYYWW'
+  dtTrama: string | null;        // texto con microsegundos como lo entrega la BD; null = inicio de la partición
+  recentIds: number[];           // int_id ya procesados dentro de la ventana de solapamiento
+}
+
+interface CatalogEntry<T> { value: T; dtModificacion: string | null; fetchedAt: string }
 ```
+`retryCount` es solo informativo: no decide ningún comportamiento (sin límites, sin fallo, sin pausa).
 
 ## Interfaces
 ```typescript
 interface RouteStateStore {
-  get(deviceId: string): Promise<RouteState | null>;
-  set(deviceId: string, state: RouteState): Promise<void>;
-  delete(deviceId: string): Promise<void>; // al completar o cancelar una ruta
-  list(): Promise<RouteState[]>; // todos los estados persistidos
+  get(assignmentId: number): Promise<RouteState | null>;
+  getByDevice(deviceId: number): Promise<RouteState | null>;
+  set(state: RouteState): Promise<void>;
+  delete(assignmentId: number): Promise<void>;
+  list(): Promise<RouteState[]>;
 }
-
-interface PollingCursorStore {
-  get(sourceName: string): Promise<string | null>;
-  set(sourceName: string, cursorValue: string): Promise<void>;
+interface ChainCursorStore {
+  get(deviceId: number): Promise<ChainCursor | null>;
+  set(deviceId: number, cursor: ChainCursor): Promise<void>;
+  delete(deviceId: number): Promise<void>;
+}
+interface CatalogCacheStore {
+  get<T>(entity: string, id: number): Promise<CatalogEntry<T> | null>;
+  set<T>(entity: string, id: number, entry: CatalogEntry<T>): Promise<void>;
+  delete(entity: string, id: number): Promise<void>;
 }
 ```
 
-## Convención de llaves en Redis
-- `route:{deviceId}` → `RouteState` serializado en JSON.
-- `cursor:{sourceName}` → valor plano del cursor (string), p. ej. `cursor:reporte_cadenas`.
+## Llaves en Redis
+- `route:{assignmentId}` → `RouteState` en JSON.
+- `device-route:{deviceId}` → `assignmentId` (índice para despachar tramas).
+- `chain-cursor:{deviceId}` → `ChainCursor` en JSON.
+- `catalog:{entity}:{id}` → `CatalogEntry` en JSON.
 
-## Reglas de negocio
-- Si `route:{deviceId}` no existe, se interpreta como **"sin ruta activa"**
-  — es un estado inicial válido, no un error.
-- Si `cursor:{sourceName}` no existe, la siguiente consulta debe partir
-  desde el principio (o desde el valor por defecto que defina esa fuente)
-  — tampoco es un error.
-- No se aplica TTL a `RouteState` en esta iteración: una ruta puede tardar
-  en completarse y expirarla accidentalmente sería peor que no expirarla.
-- `list()` devuelve todos los `RouteState` guardados, o `[]` si no hay ninguno;
-  permite al orquestador reconstruir equipos pendientes y limpiar rutas
-  completadas tras reiniciar, sin consultar ni escribir la BD externa.
-- Redis debe estar configurado con persistencia a disco (`appendonly yes`)
-  para que el cursor y el estado sobrevivan a un reinicio — esto es un
-  requisito de infraestructura, documentado en `docs/architecture.md`, no
-  algo que el código pueda garantizar por sí mismo.
+## Reglas
+- `set` de `RouteState` actualiza `route:` y `device-route:` en una sola transacción (`MULTI`); `delete` borra ambas llaves.
+- `list()` recorre las llaves con `SCAN`, nunca con `KEYS`, y solo considera llaves `route:{número}`.
+- Sin TTL en `RouteState`, cursores ni caché; la vigencia de la caché la decide la spec 005.
+- Redis requiere `appendonly yes` y `maxmemory-policy noeviction` (requisito de despliegue; Ever).
+- Leer algo inexistente devuelve `null`, no un error. `getByDevice` devuelve `null` si el índice apunta a una asignación que ya no existe.
+- **Valores corruptos** (JSON inválido en una llave): `get` y `getByDevice` lanzan `CorruptStateError` (mensaje en español con la llave). `list()` **omite** las llaves corruptas y avisa con un callback opcional `onCorrupt(key, error)`; nunca falla por una sola llave dañada (principio VII).
 
 ## Criterios de aceptación
-- [ ] `RouteStateStore.get` devuelve `null` (no error) cuando no hay estado
-      guardado para un `deviceId`.
-- [ ] `RouteStateStore.set` seguido de `get` devuelve exactamente el mismo
-      objeto guardado.
-- [ ] `RouteStateStore.delete` elimina el estado; un `get` posterior vuelve
-      a devolver `null`.
-- [ ] `RouteStateStore.list` devuelve los estados guardados, refleja las
-      eliminaciones y devuelve `[]` cuando no hay estados.
-- [ ] `PollingCursorStore.get`/`set` tienen el mismo comportamiento de
-      "no existe → null" para cursores.
-- [ ] Ningún test de este módulo requiere una conexión a PostgreSQL.
-- [ ] Los tests corren contra una implementación de Redis en memoria (no
-      contra un Redis real) para no depender de infraestructura en CI.
+- [ ] `RouteStateStore`: `get`, `set`, `delete` y `list` devuelven lo guardado; un inexistente devuelve `null`.
+- [ ] `getByDevice` encuentra el estado por `deviceId`; tras `delete` devuelve `null`.
+- [ ] `set` y `delete` mantienen consistentes `route:` y `device-route:`.
+- [ ] `ChainCursorStore` y `CatalogCacheStore` guardan, leen y borran con el mismo comportamiento de "inexistente → `null`".
+- [ ] `FsmState` no contiene `FAILED` ni `PAUSED`.
+- [ ] `routeType` se guarda y se lee dentro del `RouteState`.
+- [ ] Un JSON corrupto hace que `get` lance `CorruptStateError`, y que `list()` omita esa llave, llame a `onCorrupt` y devuelva las demás.
+- [ ] `list()` no incluye llaves `device-route:` ni otras ajenas a `route:{número}`.
+- [ ] Ninguna prueba toca PostgreSQL ni requiere un Redis real.
+- [ ] Las pruebas usan Redis en memoria (`ioredis-mock`).
