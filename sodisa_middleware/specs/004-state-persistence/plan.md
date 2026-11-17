@@ -8,6 +8,7 @@ src/persistence/
   routeStateStore.ts
   chainCursorStore.ts      // reemplaza a cursorStore.ts
   catalogCacheStore.ts
+  index.ts                // entrada pública de tipos, interfaces e implementaciones
   persistence.test.ts
 ```
 
