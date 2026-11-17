@@ -1,11 +1,12 @@
-# Tasks — 003-queclink-protocol
- 
-- [x] Crear `src/protocol/types.ts` con `DeviceProfile`, `GeoParams`, `ParsedMessage`.
-- [x] Crear `src/protocol/profiles.ts` con `GV300W_PROFILE` y `GV310LAU_PROFILE`.
-- [x] Implementar `buildGeoCommand(profile, params)` en `command.ts`.
-- [x] Implementar el caso de reset (`mode: 0`) como parte de `buildGeoCommand`, no como función aparte.
-- [x] Implementar `parseMessage(profile, raw)` en `parser.ts`, con las dos ramas: familia GTGEO (GV300W) y familia GTGIN/GTGOT (GV310LAU).
-- [x] Implementar `sendGeoCommand(host, port, command)` en `transport.ts` con `dgram`.
-- [x] Escribir tests en `protocol.test.ts` con las 6 cadenas reales del `spec.md` como fixtures, más el caso de reset y un caso de cadena desconocida.
-- [x] Confirmar `npm test` en verde y el linter sin errores.
-- [x] Marcar esta lista como completa y actualizar el estado de 003 en `AGENTS.md` a "Implementado".
+# Tasks 003 — Protocolo Queclink
+
+- [x] **T1. Fixtures.** Copiar tal cual las siete tramas reales de la sección “Tramas reales de referencia” de la spec a `src/protocol/__fixtures__/`. Los índices de campo de la spec ya están verificados contra ellas; el agente solo los implementa.
+- [x] **T2. Tipos y errores.** `types.ts`, `errors.ts`.
+- [x] **T3. Perfiles.** `profiles.ts` con `PROFILES` y `profileFor`.
+- [x] **T4. Armado.** `buildGeoCommand`, `buildResetCommand`, `RESET_PARAMS`, con toda la validación de la spec. Pruebas: comando exacto por modelo, 6 decimales, orden lon/lat, una prueba por regla de validación.
+- [x] **T5. Decodificación.** `decodeFrame` con prueba sobre un `Buffer`.
+- [x] **T6. Lectura.** `parseMessage` con las cuatro clases de trama y `unknown`. Pruebas: fixtures reales, `A1` sintético, máscara del LAU, `$` opcional, basura/vacío/truncado sin lanzar.
+- [x] **T7. Entrada pública.** `index.ts` exporta solo lo de la spec.
+- [x] **T8. Sin red.** Prueba que revisa los imports de `src/protocol/` (sin `dgram`, `net`, `http`, `https`, `fetch`).
+- [x] **T9. Limpieza.** Eliminar el transporte UDP antiguo y su prueba; confirmar que no queda ninguna referencia en `src/`.
+- [x] **T10. Cierre.** `npm run lint`, `npm run build` y `npm test` en verde. Fila de 003 en `AGENTS.md` actualizada. Commit.

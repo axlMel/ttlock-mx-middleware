@@ -1,110 +1,79 @@
-import { createSocket, type Socket } from 'node:dgram';
-import { buildGeoCommand } from './command';
-import { parseMessage } from './parser';
-import { GV300W_PROFILE, GV310LAU_PROFILE } from './profiles';
-import { sendGeoCommand } from './transport';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { buildGeoCommand, buildResetCommand, decodeFrame, InvalidCommandInputError, parseMessage, profileFor, PROFILES, RESET_PARAMS, type GeoCommandInput } from './index';
 
-jest.mock('node:dgram', () => ({ createSocket: jest.fn() }));
+const fixtures = join(__dirname, '__fixtures__');
+const fixture = (name: string): string => readFileSync(join(fixtures, `${name}.txt`), 'utf8').trimEnd();
+const input: GeoCommandInput = { latitude: 19.355383, longitude: -99.128206, radiusM: 50, mode: 3, serial: '0001' };
 
-// Tramas capturadas en campo y documentadas literalmente en spec.md.
-const GV300W_ACK = '+ACK:GTGEO,270D04,863457050476769,,0,FFFF,20260921220939,03C8';
-const GV300W_ENTER = '+RESP:GTGEO,270D04,863457050476769,,,01,1,1,0.0,0,2257.0,-99.127905,19.355447,20260921220959,0334,0020,0336,8F3D,00,0.2,20260921220959,03C9';
-const GV300W_EXIT = '+RESP:GTGEO,270D04,863457050476769,,,00,1,1,3.3,79,2258.0,-99.127571,19.355516,20260921221159,0334,0020,2C1A,90489A1,00,0.2,20260921221159,03CD';
-const GV310LAU_ACK = '+ACK:GTGEO,6E0A03,868589060960328,,0,FFFF,20260925001304,01CA';
-const GV310LAU_ENTER = '+RESP:GTGIN,6E0A03,868589060960328,,,0,1,00000001,,,,,1,1,0.0,0,2248.0,-99.128239,19.355355,20260925002252,0334,0020,024A,015FAD2B,00,0.0,20260925002253,01F9';
-const GV310LAU_EXIT = '+RESP:GTGOT,6E0A03,868589060960328,,,0,1,00000001,,,,,1,1,0.0,0,2249.8,-99.128245,19.355360,20260925002356,0334,0020,024A,015FAD2B,00,0.0,20260925002357,0206';
-
-describe('buildGeoCommand', () => {
-  const geoParams = { lat: 19.355383, lon: -99.128206, radius: 50, mode: 3 } as const;
-
-  test('arma el comando GV300W documentado', () => {
-    expect(buildGeoCommand(GV300W_PROFILE, geoParams)).toBe(
-      'AT+GTGEO=gv300w,0,3,-99.128206,19.355383,50,30,0,0,0,0,0,0,,,0,FFFF$',
-    );
-  });
-
-  test('arma el comando GV310LAU con Output Status explícito', () => {
-    expect(buildGeoCommand(GV310LAU_PROFILE, geoParams)).toBe(
-      'AT+GTGEO=gv310lau,0,3,-99.128206,19.355383,50,30,0,0,0,0,0,0,0000,0000,0,FFFF$',
-    );
-  });
-
-  test('desactiva GV300W con coordenadas y radio válidos', () => {
-    expect(buildGeoCommand(GV300W_PROFILE, { ...geoParams, mode: 0 })).toBe(
-      'AT+GTGEO=gv300w,0,0,0.000000,0.000000,50,30,0,0,0,0,0,0,,,0,FFFF$',
-    );
-  });
-
-  test('desactiva GV310LAU con coordenadas y radio válidos', () => {
-    expect(buildGeoCommand(GV310LAU_PROFILE, { ...geoParams, mode: 0 })).toBe(
-      'AT+GTGEO=gv310lau,0,0,0.000000,0.000000,50,30,0,0,0,0,0,0,0000,0000,0,FFFF$',
-    );
-  });
+test('perfiles y comandos exactos de ambos modelos', () => {
+  expect(profileFor('GV300W')).toBe(PROFILES.GV300W);
+  expect(buildGeoCommand(PROFILES.GV300W, input)).toBe('AT+GTGEO=gv300w,0,3,-99.128206,19.355383,50,30,0,0,0,0,0,0,,,0,0001$');
+  expect(buildGeoCommand(PROFILES.GV310LAU, input)).toBe('AT+GTGEO=gv310lau,0,3,-99.128206,19.355383,50,30,0,0,0,0,0,0,0000,0000,0,0001$');
+  expect(buildGeoCommand(PROFILES.GV300W, { ...input, longitude: -99.1, latitude: 19.3, zoneId: 10, checkIntervalS: 0 })).toContain(',10,3,-99.100000,19.300000,50,0,');
 });
 
-describe('parseMessage', () => {
-  test('clasifica el ACK GV300W', () => {
-    expect(parseMessage(GV300W_PROFILE, GV300W_ACK)).toEqual({
-      kind: 'ack', imei: '863457050476769', raw: GV300W_ACK,
-    });
-  });
-
-  test('clasifica la entrada GV300W', () => {
-    expect(parseMessage(GV300W_PROFILE, GV300W_ENTER)).toEqual({
-      kind: 'zoneEvent', imei: '863457050476769', geofenceId: '0', event: 'enter', raw: GV300W_ENTER,
-    });
-  });
-
-  test('clasifica la salida GV300W', () => {
-    expect(parseMessage(GV300W_PROFILE, GV300W_EXIT)).toEqual({
-      kind: 'zoneEvent', imei: '863457050476769', geofenceId: '0', event: 'exit', raw: GV300W_EXIT,
-    });
-  });
-
-  test('clasifica el ACK GV310LAU', () => {
-    expect(parseMessage(GV310LAU_PROFILE, GV310LAU_ACK)).toEqual({
-      kind: 'ack', imei: '868589060960328', raw: GV310LAU_ACK,
-    });
-  });
-
-  test('clasifica la entrada GV310LAU', () => {
-    expect(parseMessage(GV310LAU_PROFILE, GV310LAU_ENTER)).toEqual({
-      kind: 'zoneEvent', imei: '868589060960328', geofenceId: '0', event: 'enter', raw: GV310LAU_ENTER,
-    });
-  });
-
-  test('clasifica la salida GV310LAU', () => {
-    expect(parseMessage(GV310LAU_PROFILE, GV310LAU_EXIT)).toEqual({
-      kind: 'zoneEvent', imei: '868589060960328', geofenceId: '0', event: 'exit', raw: GV310LAU_EXIT,
-    });
-  });
-
-  test('devuelve unknown ante una cadena malformada', () => {
-    const raw = '+RESP:GTGEO,270D04,,,,,01';
-    expect(parseMessage(GV300W_PROFILE, raw)).toEqual({ kind: 'unknown', raw });
-  });
-
-  test('selecciona la familia de reportes desde el perfil', () => {
-    expect(parseMessage(GV300W_PROFILE, GV310LAU_ENTER)).toEqual({
-      kind: 'unknown', raw: GV310LAU_ENTER,
-    });
-  });
+test('reset usa RESET_PARAMS para ambos modelos', () => {
+  expect(RESET_PARAMS).toEqual({ latitude: 0, longitude: 0, radiusM: 50, mode: 0 });
+  expect(buildResetCommand(PROFILES.GV300W, 'FFFF')).toBe('AT+GTGEO=gv300w,0,0,0.000000,0.000000,50,30,0,0,0,0,0,0,,,0,FFFF$');
+  expect(buildResetCommand(PROFILES.GV310LAU, '000A', 5)).toBe('AT+GTGEO=gv310lau,5,0,0.000000,0.000000,50,30,0,0,0,0,0,0,0000,0000,0,000A$');
 });
 
-describe('sendGeoCommand', () => {
-  test('envía por UDP al host y puerto recibidos y cierra el socket', async () => {
-    const socket = { send: jest.fn(), close: jest.fn() };
-    socket.send.mockImplementation((...args: unknown[]) => {
-      const callback = args[3] as (error: Error | null) => void;
-      callback(null);
-    });
-    jest.mocked(createSocket).mockReturnValue(socket as unknown as Socket);
+test.each([
+  ['latitude', NaN], ['latitude', -91], ['latitude', 91], ['longitude', Infinity], ['longitude', -181], ['longitude', 181],
+  ['radiusM', 49], ['radiusM', 6_000_001], ['radiusM', 50.5], ['mode', 4], ['serial', 'abcd'], ['serial', 'ABC'],
+  ['zoneId', -1], ['zoneId', 20], ['zoneId', 1.5], ['checkIntervalS', -1], ['checkIntervalS', 0.5],
+] as const)('rechaza %s=%s', (field, value) => {
+  const invalid = { ...input, [field]: value } as GeoCommandInput;
+  expect(() => buildGeoCommand(PROFILES.GV300W, invalid)).toThrow(InvalidCommandInputError);
+  expect(() => buildGeoCommand(PROFILES.GV300W, invalid)).toThrow(field);
+});
 
-    const command = 'AT+GTGEO=gv300w,0,0,0.000000,0.000000,50,30,0,0,0,0,0,0,,,0,FFFF$';
-    await sendGeoCommand('10.18.0.1', 55010, command);
+test('decodeFrame lee bytea_mensaje como latin1 y recorta el final', () => {
+  expect(decodeFrame(Buffer.from('+ACK:GTGEO,\xff \r\n', 'latin1'))).toBe('+ACK:GTGEO,ÿ');
+});
 
-    expect(createSocket).toHaveBeenCalledWith('udp4');
-    expect(socket.send).toHaveBeenCalledWith(command, 55010, '10.18.0.1', expect.any(Function));
-    expect(socket.close).toHaveBeenCalledTimes(1);
-  });
+test.each([
+  ['gv300w-ack', { kind: 'ack', imei: '863457050476769', serial: 'FFFF' }],
+  ['gv310lau-ack-a', { kind: 'ack', imei: '135790246811220', serial: '000A' }],
+  ['gv310lau-ack-b', { kind: 'ack', imei: '868589060960328', serial: 'FFFF' }],
+  ['gv300w-enter', { kind: 'zoneEvent', imei: '863457050476769', geofenceId: 0, event: 'enter' }],
+  ['gv300w-exit', { kind: 'zoneEvent', imei: '863457050476769', geofenceId: 0, event: 'exit' }],
+  ['gv310lau-enter', { kind: 'zoneEvent', imei: '868589060960328', geofenceId: 0, event: 'enter' }],
+  ['gv310lau-exit', { kind: 'zoneEvent', imei: '868589060960328', geofenceId: 0, event: 'exit' }],
+] as const)('clasifica fixture %s', (name, expected) => {
+  const raw = fixture(name);
+  expect(parseMessage(raw)).toEqual({ ...expected, raw });
+});
+
+test('GV300W interpreta A1 como entrada en zona 10', () => {
+  const raw = fixture('gv300w-enter').replace(',,,01,', ',,,A1,');
+  expect(parseMessage(raw)).toMatchObject({ kind: 'zoneEvent', geofenceId: 10, event: 'enter' });
+});
+
+test('máscara LAU coincide con el id de zona de ambos fixtures', () => {
+  for (const name of ['gv310lau-enter', 'gv310lau-exit']) {
+    const raw = fixture(name);
+    const fields = raw.split(',');
+    const parsed = parseMessage(raw);
+    expect(parsed.kind).toBe('zoneEvent');
+    if (parsed.kind === 'zoneEvent') expect(parseInt(fields[7], 16) & (1 << parsed.geofenceId)).toBe(1 << parsed.geofenceId);
+  }
+});
+
+test('tolera terminador opcional', () => {
+  const raw = fixture('gv310lau-ack-b');
+  expect(parseMessage(raw.slice(0, -1))).toEqual({ ...parseMessage(raw), raw: raw.slice(0, -1) });
+});
+
+test.each(['', 'basura', '+ACK:GTGEO,270D04,863457050476769', '+RESP:GTGEO,270D04,863457050476769,,,01', '+RESP:GTGIN,6E0A03,868589060960328,,,x,1'])('trama inválida devuelve unknown', (raw) => {
+  expect(parseMessage(raw)).toEqual({ kind: 'unknown', raw });
+});
+
+test('el módulo no importa transporte ni usa fetch', () => {
+  for (const name of readdirSync(__dirname).filter((file) => file.endsWith('.ts'))) {
+    const source = readFileSync(join(__dirname, name), 'utf8');
+    if (name === 'protocol.test.ts') continue;
+    expect(source).not.toMatch(/(?:from\s*['"](?:node:)?(?:dgram|net|http|https)['"]|\bfetch\s*\()/);
+  }
 });
