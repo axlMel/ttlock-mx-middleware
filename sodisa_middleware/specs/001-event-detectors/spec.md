@@ -1,68 +1,126 @@
-# Spec 001 — Event Detectors
+# Spec 001 — Detectores (asignaciones vigentes y tramas del equipo)
+
+> Carpeta `specs/001-event-detectors`; código en `src/detectors/`.
 
 ## Objetivo
-Detectar, mediante polling administrado, (a) asignaciones de ruta vigentes
-y (b) nuevos eventos en el reporte de cadenas (ACK y entradas/salidas de
-zona), para alimentar al orquestador (`specs/002`).
+Exponer dos fuentes de datos de la BD de GlobalTrack: las asignaciones vigentes y las tramas nuevas
+de un equipo. Son consultas puntuales; el orquestador decide cuándo y con qué frecuencia llamarlas.
 
 ## Fuera de alcance
-- Decisión de qué hacer con cada evento (FSM) → `specs/002`.
-- Parseo del contenido de la trama → `specs/003` (este módulo entrega las
-  tramas crudas + metadatos, no las interpreta).
-- Persistencia del cursor → `specs/004` (este módulo lo consume a través
-  de la interfaz ya implementada, no lo reimplementa).
-
-## Esquema de origen (ASUMIDO — pendiente de confirmación formal)
-`asignaciones_rutas` (imei, latitud, longitud, radio, orden, estatus) y
-`reporte_cadenas` (id_report, imei, trama, fecha). Ver `docs/architecture.md`.
+- Decisión sobre cada evento → `specs/002`. Interpretación de tramas → `specs/003` (aquí solo se entregan `Buffer`).
+- Unidad, dispositivo y plan de ruta → `specs/005`. Persistencia del cursor → `specs/004`.
+- Creación del pool (máx. 3 conexiones, `statement_timeout` 5 s) y lectura de variables de entorno → arranque (`specs/006`). Aquí se **recibe** un cliente y opciones.
 
 ## Interfaces
 ```typescript
-interface RouteAssignment {
-  imei: string;
-  latitude: number;
-  longitude: number;
-  radius: number;
-  order: number;
+// src/db/types.ts  (compartido; 005 pasa a importarlo de aquí)
+interface SqlClient { query(text: string, values: unknown[]): Promise<{ rows: Record<string, unknown>[] }>; }
+
+interface AssignmentRow {
+  assignmentId: number; companyId: number; unitId: number; catalogRouteId: number;
+  estado: number; enUso: boolean;
+  horaInicial: Date; horaFinal: Date;      // interpretadas en assignmentTz
+  modificadoEn: string | null;             // texto tal cual lo entrega la BD
+}
+interface AssignmentDetector {
+  listVigentes(companyId: number): Promise<AssignmentRow[]>;
+  getById(assignmentId: number): Promise<AssignmentRow | null>;
 }
 
-interface ChainReportRow {
-  idReport: string;
-  imei: string;
-  raw: string;
+interface ChainFrame { frameId: number; deviceId: number; receivedAt: string; raw: Buffer }
+interface ChainAlert { code: 'PARTITION_UNREADABLE' | 'PARTITION_DISAPPEARED' | 'CHAIN_WINDOW_SATURATED'; partition: string; message: string }
+interface ChainReader {
+  initCursor(deviceId: number): Promise<ChainCursor>;
+  readNew(deviceId: number, cursor: ChainCursor): Promise<{ frames: ChainFrame[]; cursor: ChainCursor; hasMore: boolean }>;
 }
 
-interface RouteDetector {
-  getActiveRoutes(): Promise<RouteAssignment[]>;
+interface DetectorOptions {
+  assignmentTz: string;        // ASSIGNMENT_TZ
+  chainBatchLimit: number;     // CHAIN_BATCH_LIMIT
+  chainOverlapMs: number;      // CHAIN_OVERLAP_MS
+  partitionRefreshMs: number;  // PARTITION_REFRESH_MS
+  now?: () => number;          // reloj inyectable
+  onAlert?: (alert: ChainAlert) => void;
 }
-
-interface ChainReportDetector {
-  getNewEvents(): Promise<ChainReportRow[]>;
-}
+function createAssignmentDetector(db: SqlClient, opts: Pick<DetectorOptions,'assignmentTz'>): AssignmentDetector;
+function createChainReader(db: SqlClient, opts: DetectorOptions): ChainReader;
 ```
+`ChainCursor` está definido en `specs/004`. Todo se exporta desde `src/detectors/index.ts`; es lo único que otros módulos pueden importar.
 
-## Reglas de negocio
-- `getActiveRoutes` filtra por `estatus = 'vigente'` (nombre de columna
-  asumido — confirmar con Paloma).
-- `getNewEvents` usa `PollingCursorStore.get('reporte_cadenas')` (de
-  `specs/004`) para saber desde dónde consultar, y `PollingCursorStore.set`
-  para avanzarlo tras procesar el lote — nunca guarda el cursor en la BD
-  externa (principio V).
-- Este módulo expone funciones de **consulta puntual** (`getActiveRoutes`,
-  `getNewEvents`) — no implementa el ciclo de polling en sí (intervalos,
-  reintentos, logging ante fallo). Esa responsabilidad vive en
-  `specs/002`, cuyo worker de BullMQ llama a estas funciones en cada tick
-  de un job repetible — 001 no debe saber cuándo ni con qué frecuencia se
-  le llama (misma separación aplicada en el resto del proyecto).
+## Consultas autorizadas
+```sql
+-- A1. Asignaciones vigentes de una empresa (índice empresa_por_estado4)
+SELECT int_id, int_idempresa, int_idunidad, int_idruta, int_estado, bol_enuso,
+       dt_hora_inicial AT TIME ZONE $2 AS dt_hora_inicial,
+       dt_hora_final   AT TIME ZONE $2 AS dt_hora_final,
+       dt_modificacion::text AS dt_modificacion
+FROM catalogos.tbl_asignacion_viaje
+WHERE int_idempresa = $1 AND int_estado = 1 AND bol_enuso;
+
+-- A2. Una asignación por llave primaria (mismas columnas)
+SELECT int_id, int_idempresa, int_idunidad, int_idruta, int_estado, bol_enuso,
+       dt_hora_inicial AT TIME ZONE $2 AS dt_hora_inicial,
+       dt_hora_final   AT TIME ZONE $2 AS dt_hora_final,
+       dt_modificacion::text AS dt_modificacion
+FROM catalogos.tbl_asignacion_viaje WHERE int_id = $1;
+
+-- C0. Última trama del equipo en la partición (índice idx_dispositivo_fecha)
+SELECT max(dt_trama)::text AS ultima FROM tbl_cadena."<partición>" WHERE int_iddispositivo = $1;
+-- C0b. Ids dentro de la ventana de solapamiento
+SELECT int_id FROM tbl_cadena."<partición>"
+WHERE int_iddispositivo = $1 AND dt_trama >= $2::timestamp - $3 * interval '1 millisecond';
+
+-- C1. Tramas nuevas de un equipo
+SELECT int_id, dt_trama::text AS dt_trama, bytea_mensaje FROM tbl_cadena."<partición>"
+WHERE int_iddispositivo = $1 AND dt_trama >= $2::timestamp - $3 * interval '1 millisecond'
+ORDER BY dt_trama LIMIT $4;
+-- C1b. Igual, sin la condición de tiempo, cuando el cursor está en null
+SELECT int_id, dt_trama::text AS dt_trama, bytea_mensaje FROM tbl_cadena."<partición>"
+WHERE int_iddispositivo = $1 ORDER BY dt_trama LIMIT $2;
+
+-- P0. Descubrimiento de particiones (catálogo, sin JOIN)
+SELECT oid FROM pg_namespace WHERE nspname = 'tbl_cadena';
+SELECT relname FROM pg_class
+WHERE relnamespace = $1 AND relkind IN ('r','p') AND relname ~ '^[0-9]{6}$'
+ORDER BY relname DESC LIMIT 2;
+```
+`$2` de A1/A2 es `assignmentTz`. `$3` de C0b/C1 es `chainOverlapMs`; `$4` de C1 es `chainBatchLimit`.
+El nombre de partición solo se acepta si viene de P0 y cumple `^[0-9]{6}$`; se cita como identificador y nunca se concatena texto externo.
+Las columnas `dt_hora_inicial`, `dt_hora_final`, `dt_modificacion` y `dt_trama` son `timestamp without time zone`: `AT TIME ZONE` las interpreta en `assignmentTz` y `::text` conserva la precisión completa. No se configura ningún parser global de tipos de `pg`.
+
+## Reglas
+**Asignaciones**
+- `listVigentes` solo devuelve `int_estado = 1` y `bol_enuso`. `getById` devuelve la fila sea cual sea su estado; `null` si no existe.
+- `int_id`, `int_idempresa`, `int_idunidad`, `int_idruta` y `int_estado` se convierten con `Number()` y se validan como enteros finitos; una fila inválida lanza un error con su `int_id`.
+
+**Tramas**
+- Un `ChainReader` por proceso. Se consulta **un equipo por llamada**; el orquestador las encadena de forma secuencial.
+- “Partición actual” = la más nueva de P0 que sea legible. Una partición es **no legible** cuando la consulta falla con el código `42501` (permiso denegado: el acceso se otorga por partición). Cualquier otro error se propaga.
+- `initCursor`: C0 y C0b en la partición actual. Sin tramas → `{ partition, dtTrama: null, recentIds: [] }`. Si ninguna de las dos particiones es legible, lanza error.
+- `readNew`: C1 (o C1b si `dtTrama` es null) en `cursor.partition`. Descarta filas cuyo `int_id` esté en `recentIds`. El nuevo `dtTrama` es el mayor de todas las filas devueltas. Los nuevos `recentIds` son los ids de **todas** las filas devueltas (también las descartadas) cuyo `dt_trama` esté dentro de `chainOverlapMs` del nuevo `dtTrama`; la comparación usa microsegundos enteros (sin pasar por `Date`). `hasMore` es verdadero si la consulta devolvió `chainBatchLimit` filas.
+- Si la consulta devolvió `chainBatchLimit` filas y todas eran duplicadas (el cursor no puede avanzar), se emite `CHAIN_WINDOW_SATURATED`.
+- **Cambio de partición:** si la actual no devuelve filas y existe una partición más nueva, se consulta esa con C1b. Si es legible, el cursor pasa a ella con `dtTrama` de su última fila. Si no es legible (`42501`), se sigue en la actual y se emite `PARTITION_UNREADABLE` (una sola vez por partición mientras siga sin permiso).
+- Limitación documentada: una trama que llegara a la partición anterior después de pasar a la nueva no se lee.
+- `bytea_mensaje` se entrega como `Buffer`; no se usa `encode()` en SQL.
+- P0 al arrancar y cada `partitionRefreshMs`. Si una partición presente en el descubrimiento anterior ya no aparece, se emite `PARTITION_DISAPPEARED`.
+
+**Generales**
+- Consultas parametrizadas, sin JOINs ni `SELECT *`. Ninguna escritura en la BD.
 
 ## Criterios de aceptación
-- [ ] `getActiveRoutes` devuelve las rutas sembradas de prueba.
-- [ ] `getNewEvents` devuelve solo las filas con `id_report` mayor al
-      cursor guardado, y avanza el cursor correctamente tras procesarlas.
-- [ ] Ambos detectores tienen tests de integración contra la BD local.
-- [ ] Ningún detector realiza ninguna escritura sobre la BD externa.
+- [ ] `listVigentes` devuelve filas tipadas y pasa `assignmentTz` como `$2`; el `Date` resultante corresponde a esa zona (prueba con una zona distinta de UTC).
+- [ ] `getById` devuelve una asignación no vigente y `null` si no existe. Una fila con id no numérico lanza error.
+- [ ] `initCursor` devuelve el cursor con ids de la ventana; sin tramas devuelve `dtTrama: null`; con la partición más nueva sin permiso usa la anterior y emite alerta.
+- [ ] `readNew` no devuelve dos veces una trama ya vista (solapamiento y deduplicación) y avanza el cursor; `recentIds` conserva los ids de la ventana, incluidos los descartados.
+- [ ] La comparación de ventana respeta microsegundos (dos tramas a 1 µs de distancia).
+- [ ] `hasMore` es verdadero cuando se alcanza el límite; `CHAIN_WINDOW_SATURATED` cuando todas son duplicadas.
+- [ ] Cambio de partición: se agota la actual y luego se pasa a la nueva; si la nueva da `42501`, sigue en la actual con una sola alerta.
+- [ ] `PARTITION_DISAPPEARED` cuando una partición deja de aparecer en P0.
+- [ ] Un nombre de partición que no cumple `^[0-9]{6}$` se rechaza.
+- [ ] `raw` llega como `Buffer` y se puede pasar a `decodeFrame` de `specs/003`.
+- [ ] Ninguna consulta contiene `JOIN` ni `SELECT *` (prueba sobre las cadenas SQL).
+- [ ] Las pruebas usan un `SqlClient` falso con filas reales como fixtures; no hay BD local.
 
 ## Fuera de alcance de esta iteración
-- Notificación push / `LISTEN-NOTIFY` (fase 2, ya documentada en
-  `docs/architecture.md` como pendiente futuro, no de esta iteración).
-- Filtrado por empresa (campo mencionado como posible, no confirmado).
+- Índices nuevos o consultas por arreglo (`ANY`) de dispositivos.
+- Lectura de más de una partición anterior.

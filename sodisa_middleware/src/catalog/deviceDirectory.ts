@@ -1,6 +1,7 @@
 import { UnitValidationError } from './errors';
 import { modelFor } from './modelMap';
-import type { DeviceDirectory, SqlClient, UnitDevice } from './types';
+import type { SqlClient } from '../db/types';
+import type { DeviceDirectory, UnitDevice } from './types';
 
 export const UNIT_SQL = 'SELECT int_id, int_idempresa, int_iddispositivo, bol_enuso FROM catalogos.tbl_unidad WHERE int_id = $1';
 export const DEVICE_SQL = 'SELECT int_id, int_idmodelo_dispositivo, bol_enuso FROM catalogos.tbl_dispositivo WHERE int_id = $1';

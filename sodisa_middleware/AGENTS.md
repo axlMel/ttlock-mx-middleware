@@ -23,7 +23,7 @@ Flujo obligatorio para cualquier tarea nueva o modificación:
 ## Especificaciones activas
 | ID | Módulo | Estado |
 |---|---|---|
-| 001 | event-detectors (asignaciones vigentes y tramas por equipo) | Reescritura pendiente (tanda 2) |
+| 001 | event-detectors (asignaciones vigentes y tramas por equipo) | Implementado |
 | 002 | queue-orchestrator (FSM) | Reescritura pendiente (tanda 3) |
 | 003 | queclink-protocol (comandos y parseo) | Implementado |
 | 004 | state-persistence (estado, cursores y caché en Redis) | Implementado |

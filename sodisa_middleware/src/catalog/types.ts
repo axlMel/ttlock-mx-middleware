@@ -1,8 +1,6 @@
 import type { ModelName } from '../protocol';
 
-export interface SqlClient {
-  query(text: string, values: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
-}
+export type { SqlClient } from '../db/types';
 
 export interface UnitDevice {
   unitId: number;

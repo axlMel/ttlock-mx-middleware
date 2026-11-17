@@ -1,7 +1,8 @@
 import type { CatalogCacheStore } from '../persistence/catalogCacheStore';
 import type { CatalogEntry } from '../persistence/types';
+import type { SqlClient } from '../db/types';
 import { InvalidPlanError } from './errors';
-import type { RoutePlan, RoutePlanPoint, RoutePlanRepository, SqlClient } from './types';
+import type { RoutePlan, RoutePlanPoint, RoutePlanRepository } from './types';
 
 export const ROUTE_SQL = 'SELECT int_id, int_idempresa, int_tipo, dt_modificacion FROM catalogos.tbl_ruta WHERE int_id = $1';
 export const POINTS_SQL = 'SELECT int_id, int_idempresa, int_idruta, int_orden, bol_enuso, int_idsitio, dt_modificacion FROM catalogos.tbl_punto_ruta WHERE int_idempresa = $1 AND int_idruta = $2';
