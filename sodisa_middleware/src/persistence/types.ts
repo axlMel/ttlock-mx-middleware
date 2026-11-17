@@ -23,6 +23,7 @@ export interface RouteState {
   transmissionSeq: number;
   retryCount: number;
   pendingRequest: PendingRequest | null;
+  lastAcceptedCommand: string | null;
   ackDeadline: string | null;
   closing: null | { reason: 'ROUTE_DONE' | 'ASSIGNMENT_ENDED'; finalEstado: number | null };
   startedAt: string;

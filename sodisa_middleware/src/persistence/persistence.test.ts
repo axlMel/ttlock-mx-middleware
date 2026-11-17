@@ -12,6 +12,7 @@ const state: RouteState = {
   fsmState: 'AWAITING_ACK', currentPointId: 5, completedPointIds: [3],
   stepSeq: 2, transmissionSeq: 1, retryCount: 0,
   pendingRequest: { idempotencyKey: 'key-42', body: { companyId: 2, unitId: '81', comando: 'AT+GTGEO$' } },
+  lastAcceptedCommand: 'AT+GTGEO$',
   ackDeadline: '2026-11-16T12:01:00.000Z', closing: null,
   startedAt: '2026-11-16T12:00:00.000Z', updatedAt: '2026-11-16T12:00:01.000Z',
 };
@@ -65,6 +66,14 @@ test('set actualiza el índice cuando cambia el dispositivo', async () => {
 test('getByDevice devuelve null si el índice apunta a ruta ausente', async () => {
   await redis.set(deviceRouteKey(9001), '42');
   expect(await new RedisRouteStateStore(redis).getByDevice(9001)).toBeNull();
+});
+
+test('RouteState antiguo sin lastAcceptedCommand se lee como null', async () => {
+  const previous = { ...state } as Partial<RouteState>;
+  delete previous.lastAcceptedCommand;
+  await redis.set(routeKey(42), JSON.stringify(previous));
+  const store = new RedisRouteStateStore(redis);
+  await expect(store.get(42)).resolves.toEqual({ ...previous, lastAcceptedCommand: null });
 });
 
 test('JSON corrupto lanza en get y getByDevice; list avisa, omite y continúa', async () => {

@@ -37,6 +37,7 @@ interface RouteState {
   transmissionSeq: number;       // transmisiones del paso actual (la primera es 1)
   retryCount: number;            // retransmisiones del paso (solo informativo)
   pendingRequest: PendingRequest | null; // guardada ANTES de llamar a la API
+  lastAcceptedCommand: string | null; // comando del paso aceptado; ausente en estados antiguos equivale a null
   ackDeadline: string | null;    // ISO: fin de la ventana de ACK de la última transmisión aceptada
   closing: null | { reason: 'ROUTE_DONE' | 'ASSIGNMENT_ENDED'; finalEstado: number | null };
   startedAt: string;
@@ -86,6 +87,7 @@ interface CatalogCacheStore {
 - Sin TTL en `RouteState`, cursores ni caché; la vigencia de la caché la decide la spec 005.
 - Redis requiere `appendonly yes` y `maxmemory-policy noeviction` (requisito de despliegue; Ever).
 - Leer algo inexistente devuelve `null`, no un error. `getByDevice` devuelve `null` si el índice apunta a una asignación que ya no existe.
+- Al leer un `RouteState` anterior sin `lastAcceptedCommand`, se devuelve `lastAcceptedCommand: null`.
 - **Valores corruptos** (JSON inválido en una llave): `get` y `getByDevice` lanzan `CorruptStateError` (mensaje en español con la llave). `list()` **omite** las llaves corruptas y avisa con un callback opcional `onCorrupt(key, error)`; nunca falla por una sola llave dañada (principio VII).
 
 ## Criterios de aceptación
@@ -95,6 +97,7 @@ interface CatalogCacheStore {
 - [ ] `ChainCursorStore` y `CatalogCacheStore` guardan, leen y borran con el mismo comportamiento de "inexistente → `null`".
 - [ ] `FsmState` no contiene `FAILED` ni `PAUSED`.
 - [ ] `routeType` se guarda y se lee dentro del `RouteState`.
+- [ ] `lastAcceptedCommand` se guarda y se lee; un estado antiguo sin el campo se lee con `null`.
 - [ ] Un JSON corrupto hace que `get` lance `CorruptStateError`, y que `list()` omita esa llave, llame a `onCorrupt` y devuelva las demás.
 - [ ] `list()` no incluye llaves `device-route:` ni otras ajenas a `route:{número}`.
 - [ ] Ninguna prueba toca PostgreSQL ni requiere un Redis real.

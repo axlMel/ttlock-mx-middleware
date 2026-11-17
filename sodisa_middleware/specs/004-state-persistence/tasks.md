@@ -11,6 +11,7 @@
 - [x] Reemplazar `cursorStore.ts` por `chainCursorStore.ts` (`get`, `set`, `delete` por `deviceId`) y retirar `PollingCursorStore`.
 - [x] Crear `catalogCacheStore.ts` (`get`, `set`, `delete` por entidad e id).
 - [x] Crear `src/persistence/index.ts` como entrada pública de tipos, interfaces, implementaciones y `CorruptStateError`.
+- [x] Añadir `lastAcceptedCommand` a `RouteState`, con ida y vuelta en Redis y lectura compatible de estados antiguos sin el campo.
 - [x] Reescribir `persistence.test.ts` con los casos del plan: tres stores, `routeType`, `FsmState` sin `FAILED` ni `PAUSED`, e índice `device-route:` consistente.
 - [x] Probar el manejo de JSON corrupto: `get` lanza `CorruptStateError`; `list()` omite la llave, llama a `onCorrupt` y devuelve las demás.
 - [x] Confirmar que `npm test` y `npm run lint` pasan, sin red, BD ni Docker.
