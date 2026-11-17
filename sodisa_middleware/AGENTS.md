@@ -27,7 +27,7 @@ Flujo obligatorio para cualquier tarea nueva o modificación:
 | 002 | queue-orchestrator (FSM) | Reescritura pendiente (tanda 3) |
 | 003 | queclink-protocol (comandos y parseo) | Implementado |
 | 004 | state-persistence (estado, cursores y caché en Redis) | Implementado |
-| 005 | device-directory (catálogo local: unidad, dispositivo y plan de ruta) | Reescritura pendiente (tanda 1) |
+| 005 | device-directory (catálogo local: unidad, dispositivo y plan de ruta) | Implementado |
 | 006 | app-bootstrap | Enmienda pendiente (tanda 3) |
 | 007 | command-gateway (API de comandos y auditoría) | Nueva (tanda 2) |
 | 008 | security-baseline | Pendiente |
