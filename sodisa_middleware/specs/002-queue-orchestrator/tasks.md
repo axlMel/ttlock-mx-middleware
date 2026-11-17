@@ -1,23 +1,13 @@
-# Tasks — 002-queue-orchestrator
+# Tasks 002 — Orquestador
 
-- [x] Añadir `bullmq` a las dependencias de la raíz y actualizar el lockfile (la conexión de `ioredis` para BullMQ usa `maxRetriesPerRequest: null`).
-- [x] Crear `src/orchestrator/types.ts` con `DomainEvent` (reutiliza `RouteState` de 004).
-- [x] Implementar `fsm.ts`: función pura `transition()` con las 10 filas de la tabla de transiciones de la spec.
-- [x] Actualizar primero los contratos y pruebas de 004 para `lastCommandSentAt: null` y `RouteStateStore.list()`.
-- [x] Escribir `fsm.test.ts`: un caso por fila de la tabla, más eventos ignorados y salida sin entrada previa.
-- [x] Implementar en `worker.ts` la cola `site-lifecycle` y los handlers `poll-routes`, `poll-reports` y `send-command`.
-- [x] Implementar los reintentos de ACK por lotes continuos: `attempts = ACK_MAX_RETRIES + 1`, backoff fijo `ACK_RETRY_BACKOFF_MS`, verificación de estado antes de cada reenvío, `warn` y siguiente lote al agotar el actual. Sin estado `FAILED` ni pausa.
-- [x] Implementar el polling adaptativo por reencolado (base con novedad; doble hasta 5× sin novedad o con error; intervalo base mientras algún equipo espere eventos).
-- [x] Implementar el ciclo de vida de `RouteState`: creación por IMEI nuevo, conservación (incluso en `COMPLETED`) mientras siga vigente, eliminación al dejar de estar vigente en `COMPLETED`.
-- [x] Implementar el paso de reset (`currentSiteIndex` igual al total de sitios) con el mismo ciclo de ACK; `COMPLETED` solo tras su ACK.
-- [x] Implementar arranque: drenar el historial de `reporte_cadenas` si no hay cursor, y reanudar los `RouteState` en `PENDING`/`CONFIGURING`/`AWAITING_ACK` sin duplicar cadenas.
-- [x] Verificar cómo 001 avanza el cursor y anotar la limitación en la spec si lo avanza antes de aplicar los eventos (sin modificar 001).
-- [x] Documentar en la spec de 002 el riesgo de ACKs y salidas tardíos, y la semántica informativa de `retryCount`.
-- [x] Registrar con `timestamp`, `deviceId` y `routeId` cada transición y comando; `warn` por lote agotado; traza de cada ciclo de polling.
-- [x] Escribir `worker.test.ts` con fakes de 001, 003, 005 y de la cola, cubriendo los criterios de aceptación de la spec.
-- [x] Confirmar `npm test` (pruebas nuevas de 002 y todas las existentes) y `npm run lint` sin errores.
-- [x] En `AGENTS.md`: retirar `POLL_INTERVAL_MS_ALERTS` (sin uso), añadir en la sección de la FSM que los reintentos de ACK son continuos y que no existe estado `FAILED` ni pausa para operador, y actualizar el estado de 002 a "Implementado".
-- [x] Marcar esta lista como completa.
-- [x] Si falla `orchestrator.start()` dentro de `startBullWorker`, cerrar
-      worker, cola y conexión Redis; probar el caso con fakes, sin modificar
-      la política de reintentos ni las transiciones.
+- [x] **T1. Tipos y serial.** `types.ts` (interfaces de la spec, eventos, efectos, `StepTask`) y `serial.ts` con prueba (0 → `0000`, 255 → `00FF`, mayúsculas).
+- [x] **T2. Transiciones puras.** `transition.ts`: filas 3 a 11 y avance de paso (siguiente punto no cumplido, paso de reset, `closing`). Una prueba por fila y por rama (incluidas: ACK de otro serial, duplicado, salida sin entrada, `geofenceId` distinto de 0, plan con puntos agregados o eliminados).
+- [x] **T3. Scheduler y exclusión.** Interfaz y `FakeScheduler` con tiempo controlado; `keyedMutex.ts` con prueba de no solapamiento por `assignmentId`.
+- [x] **T4. Transmisión.** `stepRunner.ts`: `pendingRequest` antes de llamar, clave `{assignmentId}-{stepSeq}-{transmissionSeq}`, resultados del gateway (ACCEPTED, DRY_RUN, UNCERTAIN, UNAVAILABLE, DEFINITIVE_ERROR, `AuditUnavailableError`), repetición con la misma clave y JSON, retransmisión por ventana vencida con clave nueva, avisos de lote, `ackResendEnabled`.
+- [x] **T5. Asignaciones.** `assignmentCycle.ts`: inicio (ventana, empresa, unidad única, `routeType` 1 con alerta única), cierre por no vigencia (filas 8 y 10 con `getById`), espaciado adaptativo.
+- [x] **T6. Tramas.** `chainPoller.ts`: solo equipos en espera, secuencial, `hasMore` (máx. 5), `decodeFrame` + `parseMessage`, cursor guardado solo tras aplicar el lote, prueba de `getPlan` que falla y se recupera sin perder la salida, alertas del lector conectadas por 006.
+- [x] **T7. Arranque y recuperación.** `orchestrator.ts`: `start()` con la tabla de “Arranque y reinicio”, índice `unitId → assignmentId`, sin duplicar temporizadores; `stop()` ordenado.
+- [x] **T8. Adaptador BullMQ.** `bullmqScheduler.ts` sobre la interfaz, con `jobId` deterministas y `removeOnComplete`/`removeOnFail`. Prueba unitaria del traductor de ids; sin prueba de integración con Redis en memoria.
+- [x] **T9. Ruta completa.** Prueba de punta a punta con fakes: ruta de 2 puntos hasta `COMPLETED`; modo sombra hasta `AWAITING_ACK`; reinicio a mitad de ruta.
+- [x] **T10. Entrada pública.** `index.ts` exporta solo lo de la spec.
+- [x] **T11. Cierre.** `npm run lint`, `npm run build` y `npm test` completos en verde. Fila de 002 en `AGENTS.md` actualizada (solo esa). Commit.

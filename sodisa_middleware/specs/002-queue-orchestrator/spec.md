@@ -1,195 +1,196 @@
-# Spec 002 — Queue Orchestrator (FSM)
+# Spec 002 — Orquestador (FSM por asignación)
+
+> Carpeta `specs/002-queue-orchestrator`; código en `src/orchestrator/`.
 
 ## Objetivo
-Orquestar, mediante BullMQ, el avance de cada dispositivo a través de su
-ruta: configurar el sitio actual, confirmar su ACK, detectar su salida de
-zona, avanzar al siguiente sitio y cerrar la ruta desactivando la geocerca.
+Avanzar cada asignación vigente: iniciarla cuando corresponda, configurar el punto actual en el equipo
+(vía la API de comandos), confirmar su ACK, detectar la salida de zona, pasar al siguiente punto y
+cerrar la ruta desactivando la zona.
 
 ## Principio rector
 Este middleware corre sin interfaz ni operador. Por eso:
-- **Nunca se rinde:** un comando sin ACK se reintenta indefinidamente hasta
-  obtenerlo. No existe estado `FAILED`, ni pausa para operador, ni límite
-  terminal de intentos.
-- **Nunca salta un sitio:** la ruta avanza al siguiente sitio únicamente
-  tras el ACK y la salida de zona del sitio actual.
-- **Nunca se detiene por un error:** un fallo en un dispositivo o en una
-  consulta se registra y no afecta a otros dispositivos ni al siguiente
-  ciclo.
+- **Nunca se rinde:** un comando sin ACK se retransmite indefinidamente. No existe estado `FAILED` ni pausa para operador.
+- **Nunca salta un punto:** avanza solo tras el ACK y la salida de zona del punto actual.
+- **Nunca se detiene por un error:** un fallo en un equipo, en la API o en una consulta se registra y no afecta a otros equipos ni al siguiente ciclo.
 
-## Fuera de alcance de esta spec
-- Armado/envío/parseo de comandos → `specs/003`.
-- Consulta de rutas y eventos crudos → `specs/001`.
-- Persistencia de estado y cursor → `specs/004`.
-- Resolución de modelo/IP/puerto → `specs/005`.
-Este es el único módulo que usa los cuatro juntos.
+## Módulos que usa
+001 (asignaciones y tramas), 003 (comandos y lectura de tramas), 004 (estado), 005 (unidad y plan), 007 (API y auditoría). Solo a través de sus `index.ts`.
+
+## Interfaces
+```typescript
+interface Logger { debug|info|warn|error(event: string, fields?: Record<string, unknown>): void }
+
+interface OrchestratorOptions {
+  enabledCompanies: Map<number, number>;   // plataforma -> companyId de la API (ENABLED_COMPANIES)
+  startMarginMinutes: number;              // START_MARGIN_MINUTES
+  pollIntervalMsRoutes: number;            // POLL_INTERVAL_MS_ROUTES
+  pollIntervalMsAck: number;               // POLL_INTERVAL_MS_ACK
+  ackRetryBackoffMs: number;               // ACK_RETRY_BACKOFF_MS
+  ackMaxRetries: number;                   // ACK_MAX_RETRIES (por lote)
+  ackResendEnabled: boolean;               // ACK_RESEND_ENABLED
+  dryRun: boolean;                         // COMMAND_DRY_RUN; mismo valor que recibe el gateway desde 006
+  now?: () => number;
+}
+interface OrchestratorDeps {
+  detectors: { assignments: AssignmentDetector; chains: ChainReader };   // 001
+  catalog: { devices: DeviceDirectory; plans: RoutePlanRepository };     // 005
+  gateway: CommandGateway;                                               // 007
+  routeStates: RouteStateStore; cursors: ChainCursorStore;               // 004
+  scheduler: Scheduler; logger: Logger;
+}
+interface Orchestrator { start(): Promise<void>; stop(): Promise<void>; }
+function createOrchestrator(deps: OrchestratorDeps, opts: OrchestratorOptions): Orchestrator;
+
+// Abstracción de temporizadores por paso (implementada con BullMQ y con un falso para pruebas)
+interface Scheduler {
+  schedule(jobId: string, delayMs: number, task: StepTask): Promise<void>;  // mismo jobId = no duplica
+  cancel(jobId: string): Promise<void>;
+  onTask(handler: (task: StepTask) => Promise<void>): void;
+  close(): Promise<void>;
+}
+type StepTask =
+  | { kind: 'ACK_DEADLINE'; assignmentId: number; stepSeq: number; transmissionSeq: number }
+  | { kind: 'API_RETRY';    assignmentId: number; stepSeq: number; transmissionSeq: number; attempt: number };
+```
+Todo se exporta desde `src/orchestrator/index.ts`; es lo único que otros módulos pueden importar.
+
+## Vigencia e inicio
+- **Vigente** ⇔ `int_estado = 1` y `bol_enuso` (ver `docs/architecture.md` §4).
+- **Inicio de ruta**: asignación vigente, empresa habilitada, sin `RouteState` y `ahora >= horaInicial - startMarginMinutes` y `ahora < horaFinal`.
+- Una asignación vigente por unidad. Si ya hay una en curso para la unidad, la otra se ignora con aviso hasta que la primera cierre. Si ninguna ha iniciado, se elige la de menor `horaInicial` y, en empate, la de menor `assignmentId`. Para esto se mantiene en memoria un índice `unitId → assignmentId`, reconstruido con `list()` al arrancar.
+- **Al iniciar** (en este orden): `resolveForRouteStart` (005) → `getPlan` con `forceFresh` (005) → si `routeType = 1`: alerta `ROUTE_TYPE_UNORDERED_SKIPPED` (una vez por asignación mientras siga vigente, sin persistir) y **no se crea estado** → `initCursor` (001) y guardarlo → crear el `RouteState` (`PENDING`, `stepSeq = 0`, `currentPointId` = primer punto, `routeType = 0`). Si algo falla (modelo desconocido, plan inválido, unidad inválida), se registra la alerta, **no se crea estado** y se reintenta en el siguiente ciclo.
+- El cursor del equipo se inicializa **antes** de la primera transmisión, para ignorar tramas anteriores.
 
 ## Estados
 | Estado | Significado |
 |---|---|
-| `PENDING` | El paso actual aún no se ha enviado. |
-| `CONFIGURING` | Se está enviando el comando del paso actual. |
-| `AWAITING_ACK` | Comando enviado; esperando ACK; reintentos en curso. |
-| `IN_ZONE` | ACK recibido, geocerca activa; esperando entrada o salida. (Nombre histórico: no implica que el equipo esté dentro.) |
-| `AWAITING_EXIT_ALERT` | Entrada registrada; esperando salida. |
-| `COMPLETED` | Ruta terminada y geocerca desactivada (ACK del reset recibido). |
+| `PENDING` | El paso actual aún no se ha transmitido. |
+| `CONFIGURING` | Se está transmitiendo el comando del paso actual a la API. |
+| `AWAITING_ACK` | La API aceptó la transmisión; se espera el ACK del equipo. |
+| `IN_ZONE` | ACK recibido; zona activa; se espera entrada o salida. |
+| `AWAITING_EXIT_ALERT` | Entrada registrada; se espera la salida. |
+| `COMPLETED` | Ruta terminada y zona desactivada (ACK del reset). |
 
-No existe ningún estado de fallo. Un "paso" es un sitio de la ruta o, al
-final, el **paso de reset**: `currentSiteIndex` igual al total de sitios
-(comando `Mode=0` de `specs/003`). El reset sigue el mismo ciclo que
-cualquier sitio, incluidos los reintentos de ACK.
+Un **paso** es un punto de la ruta o el **paso de reset** (`currentPointId = null`).
+`stepSeq` cuenta los pasos (empieza en 0) y su hexadecimal en mayúsculas de 4 dígitos es el **serial** del comando. Todas las transmisiones de un mismo paso usan el mismo serial.
+Comandos: punto → `buildGeoCommand` con modo 3 (entra y sale), zona 0 y los datos del punto; reset → `buildResetCommand` (003).
 
 ## Transiciones
-| # | Estado actual | Evento | Estado nuevo | Efecto |
+| # | Estado | Evento | Estado nuevo | Efecto |
 |---|---|---|---|---|
-| 1 | (IMEI sin `RouteState`) | asignación vigente detectada | `PENDING` (índice 0) | se crea el `RouteState` |
-| 2 | `PENDING` | paso listo | `CONFIGURING` | — |
-| 3 | `CONFIGURING` | comando enviado | `AWAITING_ACK` | envío UDP; inicia el lote 1 de reintentos |
-| 4 | `AWAITING_ACK` (sitio) | `ack` | `IN_ZONE` | se cancelan los reintentos pendientes |
-| 5 | `AWAITING_ACK` | lote agotado sin ACK | `AWAITING_ACK` (mismo paso) | log `warn` y se programa el siguiente lote |
-| 6 | `IN_ZONE` | `zoneEvent` enter | `AWAITING_EXIT_ALERT` | informativo |
-| 7 | `IN_ZONE` o `AWAITING_EXIT_ALERT` | `zoneEvent` exit, quedan sitios | `PENDING` (índice + 1) | — |
-| 8 | `IN_ZONE` o `AWAITING_EXIT_ALERT` | `zoneEvent` exit, era el último sitio | `CONFIGURING` (índice = total, paso de reset) | — |
-| 9 | `AWAITING_ACK` (paso de reset) | `ack` | `COMPLETED` | — |
-| 10 | cualquiera | evento que no corresponde al estado (ACK duplicado, entrada repetida, etc.) | sin cambio | se ignora; log `debug` |
+| 1 | (sin estado) | asignación elegible | `PENDING` | ver "Al iniciar" |
+| 2 | `PENDING` | paso listo | `CONFIGURING` | se arma el comando (003), `transmissionSeq = 1`, se guarda `pendingRequest` con clave nueva y se llama al gateway |
+| 3 | `CONFIGURING` | gateway `ACCEPTED` o `DRY_RUN` | `AWAITING_ACK` | se guarda `lastAcceptedCommand` con el comando del paso y se limpia `pendingRequest`; con `opts.dryRun = false`, `ackDeadline = ahora + ackRetryBackoffMs` y se programa `ACK_DEADLINE`; con `opts.dryRun = true`, `ackDeadline = null` y no se programa |
+| 4 | `CONFIGURING` (con `pendingRequest`) o `AWAITING_ACK` | `ack` con el serial del paso | `IN_ZONE`, o fila 9 si es el paso de reset | se descartan `pendingRequest` y `lastAcceptedCommand`; se cancelan temporizadores del paso |
+| 5 | `AWAITING_ACK` | `ackDeadline` vencido sin ACK | `CONFIGURING` | `transmissionSeq + 1`, `retryCount + 1`, clave nueva (ver "Retransmisión") |
+| 6 | `IN_ZONE` | `zoneEvent` entrada | `AWAITING_EXIT_ALERT` | informativo |
+| 7 | `IN_ZONE` o `AWAITING_EXIT_ALERT` | `zoneEvent` salida | `PENDING` | `currentPointId` pasa a `completedPointIds`; se relee el plan con `forceFresh`; el siguiente es el primer punto no cumplido; si no hay, el paso de reset con `closing = ROUTE_DONE`; `stepSeq + 1`, `transmissionSeq = 0`, `retryCount = 0`, `lastAcceptedCommand = null` |
+| 8 | cualquiera excepto `COMPLETED` | la asignación deja de ser vigente | `PENDING` (paso de reset) | si hubo transmisión: `closing = ASSIGNMENT_ENDED` con el estado final, `stepSeq + 1`, `transmissionSeq = 0`, `retryCount = 0`, `pendingRequest = null`, `lastAcceptedCommand = null`, se cancelan temporizadores; si no hubo ninguna, se elimina el estado |
+| 9 | `AWAITING_ACK` o `CONFIGURING` (paso de reset) | `ack` del reset | `COMPLETED` si `closing = ROUTE_DONE`; se elimina el estado si `ASSIGNMENT_ENDED` | |
+| 10 | `COMPLETED` | la asignación deja de ser vigente | (se elimina) | se registra el estado final |
+| 11 | cualquiera | evento que no corresponde (ACK con otro serial, duplicado, entrada repetida, `geofenceId` distinto de 0) | sin cambio | se ignora; log `debug` |
 
-Cada reenvío exitoso conserva `AWAITING_ACK`, actualiza `lastCommandSentAt`
-e incrementa `retryCount`; no cambia el paso. Si el envío UDP falla, no se
-marca como enviado y BullMQ lo vuelve a intentar.
+- “Hubo transmisión” ⇔ `stepSeq >= 1` o `transmissionSeq >= 1`.
+- La salida se acepta desde `IN_ZONE` aunque no se haya visto la entrada.
+- `COMPLETED` se conserva mientras la asignación siga vigente, para no reiniciar la ruta.
+- Cada transición se persiste en `RouteState` **antes** del siguiente efecto (llamada a la API, programación).
+- Si al releer el plan (fila 7) falla `getPlan`, la salida **no se consume**: ver "Lectura de tramas".
 
-La entrada es informativa: una salida se acepta desde `IN_ZONE` aunque no se
-haya visto la entrada.
-La creación inicial de la fila 1 acepta ausencia de estado y guarda
-`lastCommandSentAt: null`. El primer envío procesa `PENDING` o
-`CONFIGURING`; los reenvíos procesan `AWAITING_ACK`.
+## Concurrencia
+Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cierre, transmisión) se ejecuta de uno en uno (exclusión por `assignmentId` dentro del proceso). Asignaciones distintas avanzan en paralelo.
 
-## Reintentos de ACK (continuos, por lotes)
-- Al entrar en `AWAITING_ACK` se envía el comando; si no llega ACK, se
-  reenvía cada `ACK_RETRY_BACKOFF_MS` (espaciado fijo).
-- **`ACK_MAX_RETRIES` = número de reenvíos por lote**, además del envío
-  inicial. Agotar un lote **no es un fallo**: se emite un log `warn`
-  (lote agotado, con `deviceId`, `routeId`, `siteIndex` y número de lote)
-  y se inicia otro lote para el mismo paso, tras `ACK_RETRY_BACKOFF_MS`.
-  Los lotes se repiten indefinidamente hasta recibir el ACK.
-- El `warn` por lote es la señal operativa de que un equipo lleva tiempo
-  sin responder; no detiene nada.
-- Antes de cada reenvío se verifica el estado: si el paso ya no está en
-  `AWAITING_ACK` (llegó el ACK), no se reenvía.
-- Los ACK duplicados (producto de reenvíos) se ignoran (fila 10).
-- `retryCount` cuenta únicamente reenvíos del paso actual (sitio o reset),
-  acumulados entre lotes. El envío inicial no cuenta. Vale 0 en las filas
-  1, 7 y 8; se incrementa y persiste en cada reenvío. Es informativo: nunca
-  decide una pausa, fallo ni límite. Se incluye en cada log de reenvío y
-  en el `warn` de lote agotado.
-- Guía de configuración: `ACK_RETRY_BACKOFF_MS` debe ser mayor que la
-  latencia observada entre el envío y la aparición del ACK en el reporte de
-  cadenas más el intervalo de polling; si no, se reenviará sin necesidad.
+## Transmisión por la API (filas 2 y 5)
+1. Se arma el comando (003) y se construye la petición con la clave `{assignmentId}-{stepSeq}-{transmissionSeq}`.
+2. Se guarda `pendingRequest` (clave y JSON) en el estado.
+3. Se llama a `CommandGateway.send`. Resultados:
 
-## Ciclo de vida de la ruta
-- Las filas vigentes se agrupan por IMEI y se ordenan por `orden`; el IMEI
-  se usa como `routeId` (supuesto, ver abajo).
-- Una asignación es **nueva** solo si su IMEI no tiene `RouteState`. Volver
-  a recibir las mismas filas vigentes no reinicia ni reconfigura nada.
-- Mientras el IMEI siga con filas vigentes, su `RouteState` se conserva
-  (incluso en `COMPLETED`), para no reiniciar la ruta en cada consulta.
-- Cuando el IMEI ya no aparece con filas vigentes y su estado es
-  `COMPLETED`, se elimina su `RouteState` (queda libre para una asignación
-  futura).
+| Resultado del gateway | Acción |
+|---|---|
+| `ACCEPTED` (`SENT_UNCONFIRMED`, `OUTCOME_UNKNOWN` u otro) | Fila 3. `OUTCOME_UNKNOWN` además genera una alerta de auditoría; el ACK decide. |
+| `DRY_RUN` | Fila 3 sin retransmisiones mientras dure el modo sombra. |
+| `UNCERTAIN` o `UNAVAILABLE` (503) | Sigue en `CONFIGURING`. Se **repite la misma petición** (misma clave y mismo JSON) con `API_RETRY`: 1 s, duplicando hasta 60 s. Sin límite; aviso desde el 3.er intento. |
+| `DEFINITIVE_ERROR` (401, 403, 404, 409, 422, 3xx…) | Sigue en `CONFIGURING`. Alerta de error. Se repite la misma petición cada 5 min. Nunca clave nueva. |
 
-## Polling
-- Dos consultas periódicas: rutas (`getActiveRoutes`, 001) y reporte de
-  cadenas (`getNewEvents`, 001). Un solo poller de `reporte_cadenas` atiende
-  ACKs y alertas (misma tabla, mismo cursor), por lo que usa un único
-  intervalo base: `POLL_INTERVAL_MS_ACK`. `POLL_INTERVAL_MS_ALERTS` queda
-  sin uso y se retira de `AGENTS.md`.
-- **Intervalo adaptativo:** con novedad, la siguiente consulta usa el
-  intervalo base; sin novedad, el retraso se duplica hasta un máximo de 5×
-  el intervalo base. Novedad en rutas = un IMEI nuevo; en reportes = al
-  menos una fila nueva.
-- **Excepción:** mientras algún `RouteState` esté en `AWAITING_ACK`,
-  `IN_ZONE` o `AWAITING_EXIT_ALERT`, el poller de reportes usa siempre el
-  intervalo base (de lo contrario se retrasaría la detección del ACK o de
-  la salida).
-- Un error de consulta se registra, aplica el mismo espaciado y el
-  siguiente ciclo se programa siempre.
-- El espaciado del polling es independiente de los reintentos de ACK.
+- Nunca se crea una clave nueva para reintentar una petición de resultado incierto.
+- Si llega el ACK del paso mientras se repite la petición (fila 4), se deja de repetir.
+- Si el gateway lanza `AuditUnavailableError`, la transmisión se pospone con alerta y se reintenta con el mismo esquema de `API_RETRY`.
+- Cualquier otro error inesperado del gateway se registra y se trata como `UNCERTAIN`.
+
+## Retransmisión por falta de ACK (fila 5)
+- Política validada por Ever y Gustavo: `AT+GTGEO` es configuración idempotente.
+- Se retransmite solo si la ventana (`ackRetryBackoffMs`) venció sin ACK, con **clave nueva** y el mismo comando y serial.
+- La retransmisión usa `lastAcceptedCommand`. Si un estado antiguo no lo tiene, se reconstruye desde el plan y se emite una alerta.
+- Cada `ackMaxRetries` retransmisiones sin ACK se emite un aviso de lote agotado (con `assignmentId`, `deviceId`, paso y número de lote) y los lotes continúan indefinidamente.
+- Con `opts.dryRun = true` no se programa `ACK_DEADLINE`, no se retransmite y no se emiten avisos de lote. Con `opts.dryRun = false` se aplica la política normal.
+- Con `ackResendEnabled = false` no se retransmite: solo se emite el aviso de cada ventana vencida y se programa la siguiente ventana.
+- Antes de cada retransmisión se verifica que el paso siga en `AWAITING_ACK` con el mismo `stepSeq` y `transmissionSeq`, y que la asignación siga vigente.
+
+## Cierre por asignación no vigente (fila 8)
+- Cada ciclo de asignaciones consulta `listVigentes` por empresa habilitada. Una asignación con estado propio que **no aparece** se consulta con `getById`.
+- Si su estado ya no es 1, `bol_enuso` es falso, o no existe, se cierra según la fila 8 o 10 y se registra el `finalEstado`.
+- El reset sigue el mismo ciclo de transmisión, ACK y retransmisión que cualquier paso.
+
+## Lectura de tramas
+- Solo se consultan equipos con `RouteState` en `CONFIGURING` (con `pendingRequest`), `AWAITING_ACK`, `IN_ZONE` o `AWAITING_EXIT_ALERT`.
+- Un solo poller, **secuencial por equipo**: recorre los equipos en espera uno por uno y espera `pollIntervalMsAck` antes del siguiente recorrido. Si `hasMore`, lee otra vez enseguida (máximo 5 veces por equipo y recorrido, con una pausa corta de 100 ms).
+- Cada trama: `decodeFrame` → `parseMessage` (003), en orden de `receivedAt`. `unknown` se ignora. Un `ack` se compara con el serial del paso; un `zoneEvent` solo cuenta si `geofenceId = 0` (zona de las rutas con orden).
+- **El cursor se guarda solo después de aplicar con éxito todas las tramas del lote.** Si aplicar una falla (p. ej. `getPlan` en la fila 7), el cursor no avanza y el lote se reaplica en el siguiente recorrido; como las transiciones dependen del estado, lo ya aplicado se ignora (fila 11) y lo pendiente se completa.
+- Las alertas del lector las conecta el arranque (spec 006).
+- Métricas por recorrido: equipos consultados, filas leídas, duración y rezago (ahora − `receivedAt` de la última trama).
+
+## Polling de asignaciones
+- Una consulta `listVigentes` por empresa habilitada cada `pollIntervalMsRoutes`.
+- Espaciado adaptativo: con novedad (asignación nueva, estado cambiado) vuelve al intervalo base; sin novedad el retraso se duplica hasta 5×. Un error se registra, aplica el mismo espaciado y el ciclo siguiente se programa siempre.
+- Es independiente de los reintentos de ACK y no cancela ni falla nada.
 
 ## Arranque y reinicio
-- **Sin cursor guardado** (primer arranque): antes de procesar rutas
-  nuevas, se drena el historial completo de `reporte_cadenas` descartando
-  sus eventos, para que ACKs antiguos no completen un sitio recién
-  configurado.
-- **Con cursor guardado:** se procesan los eventos desde el cursor
-  (incluye lo ocurrido mientras el proceso estuvo detenido).
-- Tras cualquier arranque ninguna ruta queda detenida: cada `RouteState`
-  en `PENDING`, `CONFIGURING` o `AWAITING_ACK` retoma el envío/reintentos
-  de su paso actual; `IN_ZONE` y `AWAITING_EXIT_ALERT` siguen esperando
-  eventos; `COMPLETED` no requiere acción. No deben duplicarse cadenas de
-  reintentos ya activas.
-- Cada transición se persiste en `RouteState` antes de ejecutar el
-  siguiente efecto (envío, reencolado).
-- Si falla la preparación inicial del worker antes de devolver el manejador
-  de cierre al proceso, se liberan el worker, la cola y la conexión Redis
-  que creó 002. Se conserva el error de arranque para que el proceso pueda
-  informarlo y cerrar los recursos de los demás módulos.
+`start()` lee todos los `RouteState` (`list()`), reconstruye el índice `unitId → assignmentId` y retoma cada ruta:
+- `PENDING`: se retoma el paso.
+- `CONFIGURING` con `pendingRequest`: se **repite la misma petición** (misma clave y JSON).
+- `AWAITING_ACK`: con `opts.dryRun = false`, se programa `ACK_DEADLINE` según `ackDeadline`; si ya venció, retransmite. Con `opts.dryRun = true`, no se programa ni se retransmite.
+- En un estado anterior sin `lastAcceptedCommand`, se interpreta como `null`; si vence el ACK se reconstruye el comando desde el plan con alerta.
+- `IN_ZONE` y `AWAITING_EXIT_ALERT`: siguen leyendo tramas con su cursor guardado (sin cursor, `initCursor`).
+- `COMPLETED`: sin acción.
+- Los cursores guardados permiten procesar lo ocurrido mientras el proceso estuvo detenido. No existe drenaje de historial.
+- Hay una sola cadena de temporizadores por asignación, paso y transmisión (`jobId` determinista); tras un reinicio no se duplican.
+- `stop()` detiene los pollers, espera lo que esté en curso y cierra el `Scheduler`.
 
 ## Trazabilidad
-- Cada transición y cada comando enviado (incluidos reenvíos y reset):
-  `timestamp`, `deviceId`, `routeId`.
-- Cada lote agotado: `warn` con además `siteIndex` y número de lote.
-- Cada ciclo de polling: fuente, cantidad de resultados y próximo retraso.
+- Cada transición y cada comando: `timestamp`, `deviceId` y `routeId` (= `assignmentId`).
+- Cada lote agotado y cada alerta: además `stepSeq` y `transmissionSeq`.
+- Cada ciclo de polling: fuente, resultados y próximo retraso.
+- La auditoría de comandos la escribe el gateway (spec 007).
 
 ## Criterios de aceptación
-- [ ] Ruta de 2 sitios con fakes: pasa en orden por ACK, entrada, salida,
-      avance, paso de reset, ACK del reset y `COMPLETED`.
-- [ ] Con `ACK_MAX_RETRIES` pequeño y varios lotes sin ACK: nunca aparece
-      un estado de fallo, nunca se salta el sitio, hay un `warn` por lote
-      agotado, y al llegar el ACK la ruta continúa con normalidad.
-- [ ] Al llegar el ACK se detienen los reenvíos; los ACK duplicados y las
-      entradas repetidas se ignoran.
+- [ ] No se inicia una asignación fuera de la ventana, de otra empresa, no vigente o con unidad ya en curso.
+- [ ] Una asignación de ruta tipo 1 no crea estado y emite una sola alerta mientras siga vigente.
+- [ ] Una ruta de 2 puntos con fakes pasa en orden por transmisión, ACK, entrada, salida, siguiente punto, reset, ACK del reset y `COMPLETED`.
+- [ ] Un ACK con serial de otro paso, un duplicado o un `zoneEvent` con `geofenceId` distinto de 0 se ignoran.
+- [ ] Sin ACK: tras cada ventana se retransmite con **clave nueva**; cada `ackMaxRetries` hay un aviso de lote; nunca aparece un estado de fallo ni se salta el punto.
+- [ ] Con `ackResendEnabled = false` no se retransmite.
+- [ ] Error de red o 503: se repite **la misma clave y el mismo JSON**; un ACK intermedio detiene la repetición.
+- [ ] `DEFINITIVE_ERROR` no genera clave nueva y reintenta cada 5 min con alerta.
+- [ ] `AuditUnavailableError` pospone la transmisión con alerta y no la pierde.
+- [ ] Reinicio con `pendingRequest`: se repite la misma clave; no hay doble transmisión en el gateway.
+- [ ] Reinicio en `AWAITING_ACK`: se respeta `ackDeadline` y no se duplican temporizadores.
+- [ ] Si se elimina o agrega un punto entre pasos, el siguiente punto es el primero no cumplido del plan nuevo; no se repite ni se salta ninguno.
+- [ ] Si `getPlan` falla al procesar una salida, el cursor no avanza y, al recuperarse, la salida se aplica una sola vez.
+- [ ] La asignación que pasa a estado 4 (u otro no vigente) cierra con reset si hubo transmisiones, o solo se elimina si no las hubo; el estado final queda registrado.
+- [ ] Un equipo que nunca responde no bloquea a otro; dos eventos de la misma asignación no se procesan en paralelo.
 - [ ] Una salida se acepta desde `IN_ZONE` sin entrada previa.
-- [ ] Un equipo que nunca responde no bloquea ni retrasa la ruta de otro.
-- [ ] Rutas: las mismas filas vigentes repetidas no reinician un
-      `RouteState` existente (tampoco uno `COMPLETED`); un IMEI que deja de
-      estar vigente con estado `COMPLETED` pierde su `RouteState`.
-- [ ] Polling: sin novedad el retraso se duplica hasta 5×; con novedad
-      vuelve al base; un error se registra y el ciclo sigue; con equipos
-      esperando eventos el poller de reportes se mantiene en el base.
-- [ ] Arranque sin cursor: el historial se drena y un ACK antiguo no
-      completa un sitio nuevo.
-- [ ] Reinicio: un `RouteState` en `AWAITING_ACK` reanuda sus reintentos
-      sin duplicar cadenas.
-- [ ] Cada transición, comando y lote agotado queda registrado con los
-      campos requeridos.
-- [ ] La lógica de transición es testeable sin BullMQ, Redis ni red
-      (principio III).
+- [ ] El polling de tramas solo consulta equipos en espera, uno por uno, y se pone al día con `hasMore`.
+- [ ] Con `opts.dryRun = true` (mismo `COMMAND_DRY_RUN` que recibe el gateway desde 006) se llega a `AWAITING_ACK` sin temporizador, retransmisión ni avisos de lote, también tras reiniciar. Con `opts.dryRun = false` se retransmite según la política normal.
+- [ ] La lógica de transición es testeable sin BullMQ, Redis ni red (principio III).
+- [ ] Las pruebas usan fakes de 001, 005 y 007, el `Scheduler` falso con tiempo controlado, los módulos reales de 003 y Redis en memoria; no hay BD local.
 
-## Fuera de alcance de esta iteración
-- Asignaciones que se cancelan o cambian a mitad de ruta.
-- Intervención manual o reanudación: no existe pausa.
-- Prueba a escala de más de 1-2 dispositivos simultáneos.
-- Panel de monitoreo BullMQ (`npm run queue:board`).
+## Fuera de alcance (limitaciones conocidas de la v1)
+- Rutas desordenadas (`int_tipo = 1`) → spec 009.
+- Cambios al punto **actual** mientras se espera su salida (se aplican al siguiente paso).
+- Cambio de unidad o de dispositivo durante la ruta.
+- Más de una instancia del middleware.
+- Herramientas manuales de intervención.
 
-## Supuestos y riesgos conocidos (no bloquean esta iteración)
-- **routeId = IMEI:** hay una sola ruta activa por dispositivo en el esquema
-  local. Si un equipo recibiera una nueva asignación tras completar una,
-  ambas se verían iguales en los logs. Se revisa cuando Paloma confirme el
-  esquema real.
-- **Primer estado de la geocerca:** el comando usa `State Mode 0`, que según
-  el manual reporta el estado la primera vez que se obtiene. Un equipo
-  configurado estando fuera de la zona podría emitir una salida inmediata y
-  adelantar el sitio. Validar en la prueba de campo; si ocurre, se corrige
-  en `specs/003` (State Mode 1), no aquí.
-- **ACK y salida tardíos:** 003 no correlaciona el ACK con un comando
-  particular. Se acepta por IMEI solo en `AWAITING_ACK`; un ACK muy tardío
-  podría atribuirse al paso siguiente. La geocerca usa el mismo ID en cada
-  sitio; una salida duplicada o tardía también podría completar el sitio
-  siguiente. Validar ambos casos en campo; no se modifica 001 ni 003 aquí.
-- **Cursor adelantado:** 001 guarda el cursor al devolver un lote, antes de
-  que 002 aplique sus eventos. Una caída entre ambos pasos podría perder
-  eventos; se mantiene el contrato actual de 001 en esta iteración.
-- **Reinicio sin cursor y con jobs conservados:** si `reporte_cadenas` está
-  vacío, el drenaje no crea cursor. Tras reiniciar, un `poll-reports` anterior
-  puede seguir en BullMQ y el arranque programa otro drenaje; esto puede
-  dejar dos ciclos de polling de reportes. Para una simulación limpia se
-  parte de Redis vacío. Deduplicar este caso requiere una corrección futura
-  en 002; el punto de entrada de 006 no altera la cola.
+## Supuestos y riesgos
+- `State Mode 0` puede reportar una salida inmediata si el equipo se configura fuera de la zona. Validar en la fase de pruebas con unidad real; si ocurre, se corrige en la spec 003.
+- Una salida duplicada o tardía del punto anterior podría completar el siguiente (ver `docs/architecture.md` §10).
+- El adaptador de BullMQ no se puede probar con Redis en memoria (usa scripts Lua): se verifica en el despliegue sombra y de pruebas.
