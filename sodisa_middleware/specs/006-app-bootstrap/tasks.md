@@ -1,33 +1,13 @@
-# Tasks — 006-app-bootstrap
+# Tasks 006 — Arranque de la aplicación
 
-- [x] Crear `src/app/config.ts`: leer `DATABASE_URL` y `REDIS_URL`, validar
-      que no estén vacías y reutilizar `configFromEnv` de 002 para polling y
-      reintentos.
-- [x] Escribir `src/app/config.test.ts` para configuración válida, ausente e
-      inválida, sin exponer secretos en errores ni logs.
-- [x] Crear `src/app/bootstrap.ts`: construir `Pool`, Redis, adaptadores reales
-      de 001/004/005 y llamar una sola vez a `startBullWorker` con la
-      configuración y el protocolo reales; comprobar PostgreSQL y Redis
-      antes de iniciar el worker.
-- [x] Implementar en `bootstrap.ts` el cierre idempotente y la liberación de
-      recursos tras fallo de arranque: worker/cola, directorio, `Pool` y Redis,
-      intentando todos los cierres aunque uno falle; desconectar Redis si
-      todavía no alcanzó el estado listo.
-- [x] Documentar primero en la spec y tasks de 002 y después implementar en
-      `startBullWorker` la liberación de su worker, cola y Redis si falla
-      `orchestrator.start()` antes de devolver el manejador; probar el caso
-      sin alterar jobs ni transiciones.
-- [x] Crear `src/app/main.ts`: logs de arranque/apagado con timestamp,
-      manejadores `SIGINT`/`SIGTERM`, código de salida correcto y espera del
-      cierre sin duplicarlo, incluso si la señal llega durante el arranque.
-- [x] Escribir `src/app/bootstrap.test.ts` con fakes para composición,
-      arranque único, fallos parciales y orden de cierre; crear
-      `src/app/main.test.ts` para señales repetidas y códigos de salida;
-      sin conexiones reales ni envíos UDP.
-- [x] Añadir `tsconfig.build.json` y los scripts raíz `build`, `dev`,
-      `prestart` y `start`; usar `--env-file=.env` en desarrollo, actualizar
-      `engines.node` a `>=20.6` en manifest y lockfile, y agregar
-      `.env.example` sin secretos.
-- [x] Ejecutar `npm run build`, `npm test` y `npm run lint`; confirmar que
-      pasan las pruebas nuevas y las existentes de 001 a 005.
-- [x] Marcar todas estas tareas como completadas al implementar cada una.
+- [x] **T1. Revisión.** Listar lo que ya exista de arranque (`src/`, `package.json`, `.env.example`). Reportarlo. No reutilizar nada de `legacy/`.
+- [x] **T2. `loadConfig`.** Todas las variables de la spec, defaults, conversión, reglas de validación y `ConfigError` con la lista completa. Pruebas: defaults, cada regla, varias inválidas a la vez, `ENABLED_COMPANIES` (duplicados, mal formado), booleanos, zona horaria.
+- [x] **T3. Secretos.** `secrets.ts`: credenciales de `CREDENTIALS_DIRECTORY`, respaldo en entorno, recorte de espacios, error sin fuentes (sin valores en el mensaje). Pruebas con valores reconocibles.
+- [x] **T4. Redacción.** `redactConfig` y prueba de que ni la API key ni la contraseña salen en ninguna cadena registrada.
+- [x] **T5. Cableado.** `buildApp` con fábricas inyectables: pool (3 conexiones, 5 s), dos Redis, gateway y auditoría, detectores con `onAlert` → `Logger`, orquestador con el mismo `dryRun`. Pruebas de cada conexión.
+- [x] **T6. Arranque.** Orden de la spec, pruebas de PostgreSQL y Redis antes de `orchestrator.start()`, aviso de `CONFIG GET`, `shadow_mode_active`, sin drenaje de historial.
+- [x] **T7. Latido.** `heartbeat` cada 60 s con `dryRun` y conteo de rutas por estado; prueba con reloj controlado.
+- [x] **T8. Apagado.** `shutdown` en orden (`orchestrator.stop()` con límite de 25 s cierra el `Scheduler`, después Redis y pool, sin doble cierre), segunda señal, errores no capturados. Pruebas con fábricas falsas.
+- [x] **T9. `main.ts` y scripts.** Entrada sin lógica; en `package.json`, `build` y `start` (`node dist/main.js`). Sin dependencias nuevas.
+- [x] **T10. `.env.example`.** Solo las variables no secretas de `docs/architecture.md` §7; sin `COMMAND_API_KEY` ni `DATABASE_URL`, con un comentario que indique que los secretos van por credenciales de systemd (spec 008). No editar `AGENTS.md` ni `architecture.md`: listar en el resumen final las líneas que haya que cambiar.
+- [x] **T11. Cierre.** `npm run lint`, `npm run build` y `npm test` completos en verde. Fila de 006 en `AGENTS.md` actualizada (solo esa). Commit.

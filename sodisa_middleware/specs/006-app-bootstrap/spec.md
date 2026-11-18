@@ -1,84 +1,101 @@
-# Spec 006 — Arranque de la aplicación
+# Spec 006 — Arranque de la aplicación (configuración, cableado y apagado)
+
+> Carpeta `specs/006-app-bootstrap`; código en `src/config/` y `src/main.ts` (más `src/app/`).
+> Esta versión **reemplaza** el contenido anterior de la carpeta.
 
 ## Objetivo
-
-Proveer un punto de entrada ejecutable que conecte las implementaciones reales
-de 001 a 005, arranque el orquestador y mantenga el proceso activo mientras
-BullMQ ejecuta el drenaje inicial, los pollers y la reanudación de rutas.
-
-## Entradas
-
-- `DATABASE_URL` y `REDIS_URL`, obligatorias y no vacías.
-- `POLL_INTERVAL_MS_ROUTES`, `POLL_INTERVAL_MS_ACK`, `ACK_MAX_RETRIES` y
-  `ACK_RETRY_BACKOFF_MS`, con las reglas de validación de 002: intervalos y
-  backoff enteros positivos; `ACK_MAX_RETRIES` entero no negativo.
-- Señales de proceso `SIGINT` y `SIGTERM`.
-- En desarrollo, un archivo `.env` local como fuente de las mismas variables
-  mediante la función nativa `--env-file` de Node.
-
-## Comportamiento
-
-1. Validar la configuración antes de iniciar el worker. Si falta una variable
-   obligatoria o un valor es inválido, registrar un error comprensible y
-   terminar con estado distinto de cero, sin iniciar los pollers.
-2. Abrir las conexiones necesarias a PostgreSQL y Redis. PostgreSQL se usa
-   exclusivamente en consultas de solo lectura; Redis aloja el estado, el
-   cursor y la cola. No registrar URL, usuario ni contraseña.
-3. Instanciar los detectores de rutas y reportes (001), el directorio de
-   dispositivos (005), los almacenes de estado y cursor (004), y arrancar el
-   worker de BullMQ/orquestador (002) con el protocolo real (003). El arranque
-   de 002 programa el drenaje inicial si no hay cursor, los pollers y la
-   reanudación de estados persistidos según su propia spec. No duplicar esas
-   reglas en 006.
-4. Registrar en español el inicio, la disponibilidad del worker, los errores
-   de arranque y el apagado, siempre con timestamp. Un log de disponibilidad
-   significa que el trabajo inicial quedó programado; el drenaje y las
-   consultas se ejecutan después en BullMQ.
-5. Ante `SIGINT` o `SIGTERM`, iniciar un único apagado ordenado: cerrar el
-   worker y su cola, después los clientes de PostgreSQL y Redis propiedad del
-   punto de entrada. Esperar los cierres antes de terminar. Si un cierre
-   falla, registrar el error, intentar cerrar los demás recursos y terminar
-   con estado distinto de cero. Aplicar el mismo criterio a un fallo durante
-   el arranque después de crear recursos.
-
-## Salidas
-
-- Proceso en ejecución con los jobs de 002 programados y sus conexiones
-  abiertas mientras esté activo.
-- Código de salida cero tras un apagado ordenado completo; distinto de cero
-  ante configuración inválida, fallo de arranque o fallo de cierre.
-
-## Casos borde
-
-- Señales repetidas durante el cierre no ejecutan el cierre dos veces.
-- Si llega una señal durante la preparación de las conexiones, el proceso
-  espera el resultado de ese arranque y cierra los recursos que se hayan
-  creado; no inicia un segundo arranque.
-- Una conexión o el worker puede fallar después de que otras conexiones ya
-  existan; los recursos abiertos se liberan igualmente.
-- Si el cursor y los estados ya existen en Redis, 002 los usa para reanudar
-  sin duplicar cadenas de reintento; 006 no borra ni reinicia esos datos.
+Leer y validar la configuración, leer los secretos de forma segura, construir las dependencias
+reales, conectarlas entre sí, arrancar el orquestador y apagarlo de forma ordenada. Es el único
+lugar que lee `process.env` y el único que conoce todas las piezas.
 
 ## Fuera de alcance
+- La unidad de systemd, la creación de los archivos de credenciales, la rotación de la clave y la limpieza de Redis al salir del modo sombra → `specs/008`.
+- Lógica de negocio: está en 001, 002, 003, 005 y 007.
+- Puertos de entrada: el servicio **no abre ningún puerto** (`docs/architecture.md`).
 
-- Nuevas transiciones de FSM, nuevas consultas SQL, cambios de protocolo o
-  de política de polling/reintentos.
-- Sockets UDP de escucha, endpoints HTTP, panel de cola o monitoreo nuevo.
-- Cambiar el esquema de la BD externa o escribir en ella.
-- Gestión de secretos fuera de variables de entorno y del `.env` local.
+## Configuración
+Variables (defaults en `docs/architecture.md` §7):
+
+| Variable | Regla de validación |
+|---|---|
+| `ENABLED_COMPANIES` | Obligatoria. Pares `plataforma:api` separados por coma (`364:2`). Enteros positivos, sin plataformas repetidas. |
+| `ASSIGNMENT_TZ` (`UTC`) | Zona IANA válida (se comprueba con `Intl.DateTimeFormat`). |
+| `START_MARGIN_MINUTES` (15), `POLL_INTERVAL_MS_ROUTES` (10000), `POLL_INTERVAL_MS_ACK` (3000), `ACK_RETRY_BACKOFF_MS` (60000), `CATALOG_REVALIDATE_MS` (300000), `PARTITION_REFRESH_MS` (600000), `COMMAND_API_TIMEOUT_MS` (10000) | Enteros positivos. |
+| `ACK_MAX_RETRIES` (3), `CHAIN_BATCH_LIMIT` (500) | Enteros ≥ 1. |
+| `CHAIN_OVERLAP_MS` (10000) | Entero ≥ 0. |
+| `ACK_RESEND_ENABLED` (`true`), `COMMAND_DRY_RUN` (`false`) | Solo `true` o `false`. |
+| `COMMAND_API_URL` | Obligatoria. URL `https://`. |
+| `AUDIT_LOG_DIR` (`./audit`) | Ruta no vacía. Se crea si no existe y se comprueba que puede escribirse antes de abrir conexiones; si falla, error de configuración (78). |
+| `REDIS_URL` | Obligatoria. URL `redis://` o `rediss://`. |
+
+### Secretos
+Dos valores son secretos: la **API key de comandos** y la **URL de la BD** (contiene la contraseña).
+- Se leen primero de archivos de credenciales de systemd: `${CREDENTIALS_DIRECTORY}/command-api-key` y `${CREDENTIALS_DIRECTORY}/database-url` (contenido recortado de espacios y saltos de línea).
+- Si el archivo no existe, se usan las variables de entorno `COMMAND_API_KEY` y `DATABASE_URL` (para pruebas manuales en un equipo de desarrollo). Si no hay ninguna de las dos fuentes, es un error de configuración.
+- `DATABASE_URL`, tras leerse, debe ser `postgres://` o `postgresql://`.
+- Los secretos **nunca** aparecen en logs, errores, auditoría ni en la configuración que se registra al arrancar (se muestran como `***`). Un error de lectura nombra la fuente (la variable o el archivo), nunca el valor.
+
+### Errores de configuración
+Se validan **todas** las variables y se reporta la lista completa en español (variable, problema), de una vez. Con algún error el proceso termina con código **78** sin abrir conexiones.
+
+## Interfaces
+```typescript
+interface AppConfig { /* una propiedad por variable, ya convertida; secretos en apiKey y databaseUrl */ }
+function loadConfig(env: Record<string, string | undefined>, readFile: (path: string) => string): AppConfig;   // lanza ConfigError con la lista completa
+function redactConfig(config: AppConfig): Record<string, unknown>;                                            // para registrar, sin secretos
+
+interface AppFactories {        // inyectables para pruebas
+  createPool(config: AppConfig): PgPool;
+  createRedis(config: AppConfig, role: 'state' | 'queue'): RedisLike;
+  createScheduler(config: AppConfig, redis: RedisLike): Scheduler;   // BullMQ (spec 002)
+  now(): number;
+}
+interface App { start(): Promise<void>; shutdown(reason: string): Promise<void>; }
+function buildApp(config: AppConfig, logger: Logger, factories: AppFactories): App;
+```
+`src/main.ts` solo une `loadConfig` con `process.env`, el logger real, las fábricas reales y las señales; no tiene lógica propia.
+
+## Cableado (`buildApp`)
+- **Pool de PostgreSQL:** máximo **3** conexiones, `statement_timeout` de **5 s**, `application_name = gtlock-middleware`. Un `SqlClient` (spec 001) adapta `pool.query`.
+- **Redis:** una conexión para estado y caché (004) y otra para BullMQ (con `maxRetriesPerRequest: null`, que BullMQ exige).
+- **Gateway y auditoría (007):** `createAuditLog(AUDIT_LOG_DIR)` y `createCommandGateway(audit, { apiUrl, apiKey, timeoutMs, dryRun })`.
+- **Detectores (001):** `ChainReader` creado con `onAlert` que escribe en el **mismo `Logger`** que recibe el orquestador (`chain_alert`, nivel `warn`).
+- **Orquestador (002):** recibe `dryRun` con **el mismo valor** que el gateway (una sola lectura de `COMMAND_DRY_RUN`) y `enabledCompanies` convertido a `Map`.
+- Todo se importa solo desde las entradas públicas (`index.ts`) de cada módulo.
+
+## Arranque
+En este orden, y si algo falla el proceso termina con código 1 y el motivo en el log (systemd lo reiniciará):
+1. `loadConfig` (código 78 si hay errores).
+2. Se registra la configuración **sin secretos** (`redactConfig`).
+3. Se crea y comprueba `AUDIT_LOG_DIR`; un fallo de permisos o de ruta termina con código 78 sin abrir conexiones.
+4. Se prueba PostgreSQL (`SELECT 1`) y Redis (`PING`).
+5. Se consulta `CONFIG GET appendonly` y `CONFIG GET maxmemory-policy`: si no son `yes` y `noeviction`, **aviso** (no error); si `CONFIG` no está permitido, se registra a nivel `info` y se continúa.
+6. Se construyen las dependencias (sección anterior).
+7. Si `COMMAND_DRY_RUN = true`: aviso `shadow_mode_active` (nivel `warn`).
+8. `orchestrator.start()`.
+
+**No hay drenaje de historial** ni precarga de catálogos. Las rutas en curso se retoman desde Redis (spec 002).
+
+## Latido
+Cada 60 s se registra un `heartbeat` con: `dryRun`, número de rutas por estado (`list()` de `RouteStateStore`, solo conteos) y la hora del último ciclo de asignaciones y de tramas si el orquestador las expone. Como el servicio no abre puertos, es la señal de vida visible en los logs.
+
+## Apagado
+- `SIGTERM` o `SIGINT`: `shutdown`: detener el orquestador (espera lo que esté en curso, con un límite de **25 s**); `orchestrator.stop()` de 002 ya cierra el `Scheduler`. Después cerrar Redis y el pool, sin cerrar el `Scheduler` una segunda vez; salir con código 0 si todo terminó correctamente.
+- Una segunda señal durante el apagado fuerza la salida con código 1.
+- `uncaughtException` y `unhandledRejection`: se registra el error a nivel `error` y se sale con código 1. El estado vive en Redis, así que reiniciar es seguro.
 
 ## Criterios de aceptación
-
-- [ ] `npm run dev` carga el `.env` local mediante Node y arranca el proceso;
-      `npm start` arranca con variables ya presentes en el entorno.
-- [ ] Configuración ausente o inválida produce un error en español y salida
-      distinta de cero antes de arrancar BullMQ.
-- [ ] El punto de entrada conecta las implementaciones reales de 001 a 005;
-      el arranque invoca una sola vez la rutina de 002 que programa drenaje,
-      pollers y reanudación.
-- [ ] `SIGINT` y `SIGTERM` cierran worker/cola, ambos clientes PostgreSQL
-      usados por los módulos y las conexiones Redis; señales repetidas son
-      idempotentes y un fallo de cierre no impide cerrar lo demás.
-- [ ] Los logs de arranque/apagado incluyen timestamp y no exponen secretos.
-- [ ] No se abre ningún socket UDP de escucha ni se añade lógica de negocio.
-- [ ] `npm test` y `npm run lint` pasan, incluidas las pruebas existentes.
+- [ ] `loadConfig` convierte y valida cada variable de la tabla; con defaults devuelve los valores de `architecture.md` §7.
+- [ ] Con varias variables inválidas, `ConfigError` lista **todas** (variable y problema), en español.
+- [ ] Los secretos se leen de `CREDENTIALS_DIRECTORY` primero y de las variables de entorno como respaldo; sin ninguna fuente, error.
+- [ ] `redactConfig` y todo lo que se registra al arrancar no contienen la API key ni la contraseña de la BD (prueba con valores reconocibles).
+- [ ] `ENABLED_COMPANIES` se convierte en `Map` y rechaza duplicados y pares mal formados.
+- [ ] El gateway y el orquestador reciben el **mismo** valor de `dryRun`.
+- [ ] El `onAlert` del lector de tramas escribe en el `Logger` del orquestador.
+- [ ] El pool se crea con máximo 3 conexiones y `statement_timeout` de 5 s.
+- [ ] El orden de arranque se respeta; si falla la prueba de PostgreSQL o Redis, no se llama a `orchestrator.start()`.
+- [ ] `CONFIG GET` con valores distintos genera aviso; si no está permitido, el arranque continúa.
+- [ ] `shutdown` invoca `orchestrator.stop()` una vez (002 cierra el `Scheduler`), luego cierra Redis y el pool, en ese orden y sin doble cierre del `Scheduler`.
+- [ ] Una segunda señal fuerza la salida.
+- [ ] No hay drenaje de historial ni lectura de catálogos al arrancar.
+- [ ] Las pruebas usan fábricas falsas, un `readFile` falso y reloj controlado; no hay red, BD ni Redis reales.
