@@ -1,0 +1,14 @@
+# Marcador vacío: ejecuta la retención diaria sin renombrar los JSONL activos.
+/var/lib/gtlock-middleware/audit/.retention {
+    daily
+    missingok
+    ifempty
+    rotate 0
+    create 0600 gtlock gtlock
+    su gtlock gtlock
+    sharedscripts
+    lastaction
+        /usr/bin/find /var/lib/gtlock-middleware/audit -maxdepth 1 -type f -name 'audit-*.jsonl' -mmin +10080 -exec /usr/bin/gzip -- {} +
+        /usr/bin/find /var/lib/gtlock-middleware/audit -maxdepth 1 -type f -name 'audit-*.jsonl.gz' -mmin +525600 -delete
+    endscript
+}

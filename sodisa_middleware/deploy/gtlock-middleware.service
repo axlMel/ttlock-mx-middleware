@@ -1,0 +1,37 @@
+[Unit]
+Description=Configuración secuencial de geocercas GTLock
+After=network-online.target valkey.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gtlock
+Group=gtlock
+WorkingDirectory=/opt/gtlock-middleware/current
+ExecStart=/usr/bin/node /opt/gtlock-middleware/current/dist/main.js
+EnvironmentFile=/etc/gtlock-middleware/gtlock.env
+LoadCredential=command-api-key:/etc/gtlock-middleware/credentials/command-api-key
+LoadCredential=database-url:/etc/gtlock-middleware/credentials/database-url
+LoadCredential=redis-url:/etc/gtlock-middleware/credentials/redis-url
+StateDirectory=gtlock-middleware
+StateDirectoryMode=0750
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=78
+TimeoutStopSec=40
+KillSignal=SIGTERM
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

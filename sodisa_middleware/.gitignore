@@ -2,6 +2,10 @@ node_modules/
 .npm-cache/
 dist/
 .env
+audit/
+release/
+*.key
+credentials/
 *.log
 coverage/
 samples/

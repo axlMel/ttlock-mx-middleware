@@ -30,7 +30,7 @@ Flujo obligatorio para cualquier tarea nueva o modificación:
 | 005 | device-directory (catálogo local: unidad, dispositivo y plan de ruta) | Implementado |
 | 006 | app-bootstrap | Implementado |
 | 007 | command-gateway (API de comandos y auditoría) | Implementado |
-| 008 | security-baseline | Pendiente |
+| 008 | security-baseline | Implementado |
 | 009 | unordered-routes (rutas desordenadas) | Planificada, fuera de la v1 |
 
 ## Comandos
