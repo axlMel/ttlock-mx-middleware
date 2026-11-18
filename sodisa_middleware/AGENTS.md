@@ -62,7 +62,7 @@ No existe `FAILED` ni pausa para operador: los reintentos de ACK son continuos. 
 - **Datos externos:** solo lectura. Sin JOINs ni `SELECT *`. Solo llaves primarias e índices existentes. Consultas parametrizadas. El nombre de la partición de `tbl_cadena` se acepta solo si viene del catálogo y cumple `^[0-9]{6}$`. Todo el estado propio vive en Redis.
 - **Red:** solo salidas. El middleware no abre sockets ni escucha en ningún puerto. Los comandos a los equipos salen únicamente por la API de comandos (spec 007).
 - **Comandos:** se validan antes de armarse (spec 003) y se registran en la auditoría **antes** de enviarse; si la auditoría falla, no se envía. Nunca se crea una `Idempotency-Key` nueva para reintentar una petición de resultado incierto. Retransmitir por falta de ACK solo con clave nueva y la política de la spec 002. `COMMAND_DRY_RUN=true` ejecuta todo sin llamar a la API.
-- **Secretos:** `COMMAND_API_KEY` nunca aparece en el repositorio, en logs ni en la auditoría.
+- **Secretos:** `COMMAND_API_KEY` `REDIS_URL` nunca aparece en el repositorio, en logs ni en la auditoría.
 - **Trazabilidad:** todo comando y todo cambio de estado se registra con `timestamp`, `deviceId` y `routeId`.
 - No modifiques archivos dentro de `specs/` ni añadas dependencias npm sin actualizar primero la spec o el plan correspondiente, o sin petición explícita del humano.
 - Ningún módulo importa de otro salvo a través de las interfaces definidas en su `spec.md`.
@@ -74,7 +74,7 @@ El tooling (`package.json`, `tsconfig.json` estricto, Jest y ESLint) vive en la 
 Los valores por defecto y su significado están en `docs/architecture.md` §7.
 ```
 DATABASE_URL= # (secreto): se entrega con LoadCredential como database-url; la variable de entorno es solo respaldo para desarrollo.
-REDIS_URL=
+REDIS_URL=  # la variable de entorno es solo respaldo de desarrollo
 ENABLED_COMPANIES=            # pares plataforma:api, ej. 364:2 (pruebas) o 364:1 (producción)
 ASSIGNMENT_TZ=UTC
 START_MARGIN_MINUTES=15

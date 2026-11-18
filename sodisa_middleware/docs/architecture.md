@@ -77,7 +77,7 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 | Variable | Por defecto | Uso |
 |---|---|---|
 | `DATABASE_URL` | — | BD de GlobalTrack, solo lectura, secreto entregado por LoadCredential, no por .env |
-| `REDIS_URL` | — | Estado, cursores, caché y cola |
+| `REDIS_URL` | — | Estado, cursores, caché y cola. Secreto entregado por redis-url |
 | `ENABLED_COMPANIES` | — | Pares `plataforma:api` separados por coma. Pruebas `364:2`; producción `364:1` |
 | `ASSIGNMENT_TZ` | `UTC` | Zona de `dt_hora_inicial` y `dt_hora_final` (confirmada) |
 | `START_MARGIN_MINUTES` | `15` | Margen de inicio antes de `dt_hora_inicial` |
