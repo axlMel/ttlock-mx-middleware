@@ -76,7 +76,7 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 ## 7. Configuración
 | Variable | Por defecto | Uso |
 |---|---|---|
-| `DATABASE_URL` | — | BD de GlobalTrack, solo lectura |
+| `DATABASE_URL` | — | BD de GlobalTrack, solo lectura, secreto entregado por LoadCredential, no por .env |
 | `REDIS_URL` | — | Estado, cursores, caché y cola |
 | `ENABLED_COMPANIES` | — | Pares `plataforma:api` separados por coma. Pruebas `364:2`; producción `364:1` |
 | `ASSIGNMENT_TZ` | `UTC` | Zona de `dt_hora_inicial` y `dt_hora_final` (confirmada) |
@@ -91,10 +91,11 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 | `CHAIN_OVERLAP_MS` | `10000` | Solapamiento del cursor de tramas |
 | `PARTITION_REFRESH_MS` | `600000` | Redescubrimiento de particiones |
 | `COMMAND_API_URL` | — | URL de la API de comandos |
-| `COMMAND_API_KEY` | — | Secreto. Nunca en el repo ni en logs |
+| `COMMAND_API_KEY` | — | Secreto. Nunca en el repo ni en logs, entregado por LoadCredential, no por .env |
 | `COMMAND_API_TIMEOUT_MS` | `10000` | Timeout por llamada |
 | `COMMAND_DRY_RUN` | `false` | Modo sombra: no llama a la API |
 | `AUDIT_LOG_DIR` | `./audit` | Auditoría de comandos (JSON Lines por día) |
+| `CREDENTIALS_DIRECTORY` | — | Variable que pone systemd |
 
 ## 8. Despliegue por fases (sin pruebas locales)
 1. **Modo sombra** (`COMMAND_DRY_RUN=true`): lee la BD real y calcula todo, pero solo registra el comando que enviaría.
