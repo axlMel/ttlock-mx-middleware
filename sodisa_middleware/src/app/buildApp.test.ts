@@ -20,8 +20,8 @@ jest.mock('../detectors', () => {
 });
 
 const env = { ENABLED_COMPANIES: '364:2', COMMAND_API_URL: 'https://api.example.test/send',
-  REDIS_URL: 'redis://localhost:6379', COMMAND_API_KEY: 'API_SECRET_MARKER',
-  DATABASE_URL: 'postgres://u:DB_SECRET_MARKER@host/db', COMMAND_DRY_RUN: 'true' };
+  REDIS_URL: 'redis://:<valor-redis>@127.0.0.1:6379', COMMAND_API_KEY: '<valor-api>',
+  DATABASE_URL: 'postgres://u:<valor-db>@host/db', COMMAND_DRY_RUN: 'true' };
 let directory: string;
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'gtlock-app-'));
@@ -86,8 +86,10 @@ test('arranca en orden, cablea el mismo dryRun y las alertas, y oculta secretos'
   expect(h.logger.warn).toHaveBeenCalledWith('chain_alert', expect.objectContaining({ code: 'PARTITION_UNREADABLE' }));
   expect(h.logger.warn).toHaveBeenCalledWith('shadow_mode_active', expect.any(Object));
   const logs = JSON.stringify([jest.mocked(h.logger.info).mock.calls, jest.mocked(h.logger.warn).mock.calls]);
-  expect(logs).not.toContain('API_SECRET_MARKER');
-  expect(logs).not.toContain('DB_SECRET_MARKER');
+  expect(logs).not.toContain('<valor-api>');
+  expect(logs).not.toContain('<valor-db>');
+  expect(logs).not.toContain('<valor-redis>');
+  expect(logs).not.toContain(h.config.redisUrl);
   await app.shutdown('test');
   expect(h.trace.slice(-5)).toEqual(['orchestrator:stop', 'scheduler:close', 'queue:close', 'state:close', 'pg:close']);
   expect(h.scheduler.close).toHaveBeenCalledTimes(1);
@@ -95,17 +97,19 @@ test('arranca en orden, cablea el mismo dryRun y las alertas, y oculta secretos'
 
 test('un fallo de PostgreSQL o Redis impide arrancar el orquestador y cierra recursos', async () => {
   const pg = fixture();
-  (pg.pool.query as jest.Mock).mockRejectedValueOnce(new Error('secreto no mostrar'));
+  (pg.pool.query as jest.Mock).mockRejectedValueOnce(new Error('<valor-db>'));
   await expect(buildApp(pg.config, pg.logger, pg.factories).start()).rejects.toThrow();
   expect(createOrchestrator).not.toHaveBeenCalled();
   expect(pg.trace).toContain('pg:close');
   expect(pg.logger.error).toHaveBeenCalledWith('startup_failed', expect.objectContaining({ stage: 'PostgreSQL' }));
+  expect(JSON.stringify(jest.mocked(pg.logger.error).mock.calls)).not.toContain('<valor-db>');
   const redis = fixture();
   jest.mocked(redis.stateRedis.ping).mockRejectedValueOnce(new Error('offline'));
   await expect(buildApp(redis.config, redis.logger, redis.factories).start()).rejects.toThrow();
   expect(createOrchestrator).not.toHaveBeenCalled();
   expect(redis.trace).toEqual(expect.arrayContaining(['queue:close', 'state:close', 'pg:close']));
   expect(redis.logger.error).toHaveBeenCalledWith('startup_failed', expect.objectContaining({ stage: 'Redis' }));
+  expect(JSON.stringify(jest.mocked(redis.logger.error).mock.calls)).not.toContain(redis.config.redisUrl);
 });
 
 test('fallo al iniciar 002 cierra el Scheduler una vez y luego las conexiones', async () => {

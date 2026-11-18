@@ -2,7 +2,7 @@
 
 ## Decisiones
 1. **`loadConfig` es una función pura** (recibe `env` y `readFile`): se prueba sin tocar el entorno ni el disco.
-2. **Los secretos tienen dos fuentes con orden fijo:** credenciales de systemd primero, variables de entorno como respaldo para desarrollo. `DATABASE_URL` se trata como secreto porque lleva la contraseña.
+2. **Los tres secretos tienen dos fuentes con orden fijo:** credenciales de systemd primero, variables de entorno como respaldo para desarrollo. `COMMAND_API_KEY`, `DATABASE_URL` y `REDIS_URL` son secretos; las dos URL contienen contraseñas. Los archivos se llaman `command-api-key`, `database-url` y `redis-url`.
 3. **Validar todo y reportar todo.** Un error de configuración no se corrige a ciegas: se lista completo para corregirlo de una vez. Salida 78, para que 008 pueda impedir el reinicio automático en ese caso (`RestartPreventExitStatus=78`).
 4. **`buildApp` con fábricas inyectables.** Es la forma de probar el cableado (mismo `dryRun`, `onAlert` conectado, orden de cierre) sin Redis ni PostgreSQL.
 5. **`main.ts` sin lógica.** Todo lo que merece prueba vive en `src/config/` y `src/app/`.
@@ -12,6 +12,7 @@
 9. **Sin lectura de historial al arrancar.** La recuperación es responsabilidad de `orchestrator.start()`.
 10. **Dueño del Scheduler.** `orchestrator.stop()` (002) ya cierra el `Scheduler`; 006 no lo cierra de nuevo. El apagado continúa con Redis y el pool incluso si `stop()` falla o supera 25 s.
 11. **Directorio de auditoría.** `loadConfig` solo valida que la ruta no esté vacía. El arranque crea y comprueba que `AUDIT_LOG_DIR` sea escribible antes de abrir PostgreSQL o Redis; un fallo es `ConfigError` (código 78).
+12. **Redacción de Redis.** `redactConfig` oculta la URL completa de Redis. Los errores de lectura o validación mencionan solo `REDIS_URL` o la ruta de la credencial, sin incluir su valor.
 
 ## Estructura
 ```

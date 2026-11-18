@@ -77,13 +77,21 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: (p
   const credentialsDirectory = env.CREDENTIALS_DIRECTORY?.trim() || null;
   const api = readSecret(env, readFile, credentialsDirectory ?? undefined, 'command-api-key', 'COMMAND_API_KEY');
   const db = readSecret(env, readFile, credentialsDirectory ?? undefined, 'database-url', 'DATABASE_URL');
+  const redis = readSecret(env, readFile, credentialsDirectory ?? undefined, 'redis-url', 'REDIS_URL');
   if (api.issue) issues.push(api.issue);
   if (db.issue) issues.push(db.issue);
+  if (redis.issue) issues.push(redis.issue);
   if (db.value) {
     try {
       const parsed = new URL(db.value);
       if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname) throw new Error();
     } catch { issues.push('DATABASE_URL: debe ser una URL postgres:// o postgresql:// válida.'); }
+  }
+  if (redis.value) {
+    try {
+      const parsed = new URL(redis.value);
+      if (!['redis:', 'rediss:'].includes(parsed.protocol) || !parsed.hostname) throw new Error();
+    } catch { issues.push('REDIS_URL: debe ser una URL redis:// o rediss:// válida.'); }
   }
   const auditLogDir = env.AUDIT_LOG_DIR ?? './audit';
   if (!auditLogDir.trim()) issues.push('AUDIT_LOG_DIR: la ruta no puede estar vacía.');
@@ -102,7 +110,7 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: (p
     commandApiUrl: url('COMMAND_API_URL', ['https:']), apiKey: api.value ?? '',
     commandApiTimeoutMs: number('COMMAND_API_TIMEOUT_MS', 10000, 1),
     dryRun: boolean('COMMAND_DRY_RUN', false), auditLogDir,
-    redisUrl: url('REDIS_URL', ['redis:', 'rediss:']), databaseUrl: db.value ?? '', credentialsDirectory,
+    redisUrl: redis.value ?? '', databaseUrl: db.value ?? '', credentialsDirectory,
   };
   if (issues.length) throw new ConfigError(issues);
   return config;

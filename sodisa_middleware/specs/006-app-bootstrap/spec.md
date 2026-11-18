@@ -26,13 +26,14 @@ Variables (defaults en `docs/architecture.md` §7):
 | `ACK_RESEND_ENABLED` (`true`), `COMMAND_DRY_RUN` (`false`) | Solo `true` o `false`. |
 | `COMMAND_API_URL` | Obligatoria. URL `https://`. |
 | `AUDIT_LOG_DIR` (`./audit`) | Ruta no vacía. Se crea si no existe y se comprueba que puede escribirse antes de abrir conexiones; si falla, error de configuración (78). |
-| `REDIS_URL` | Obligatoria. URL `redis://` o `rediss://`. |
+| `REDIS_URL` | Obligatoria y secreta. Se lee primero de `${CREDENTIALS_DIRECTORY}/redis-url` y, solo para desarrollo, de `REDIS_URL` en el entorno. URL `redis://` o `rediss://`. |
 
 ### Secretos
-Dos valores son secretos: la **API key de comandos** y la **URL de la BD** (contiene la contraseña).
-- Se leen primero de archivos de credenciales de systemd: `${CREDENTIALS_DIRECTORY}/command-api-key` y `${CREDENTIALS_DIRECTORY}/database-url` (contenido recortado de espacios y saltos de línea).
-- Si el archivo no existe, se usan las variables de entorno `COMMAND_API_KEY` y `DATABASE_URL` (para pruebas manuales en un equipo de desarrollo). Si no hay ninguna de las dos fuentes, es un error de configuración.
+Tres valores son secretos: la **API key de comandos**, la **URL de la BD** y la **URL de Redis**, que contienen contraseñas.
+- Se leen primero de archivos de credenciales de systemd: `${CREDENTIALS_DIRECTORY}/command-api-key`, `${CREDENTIALS_DIRECTORY}/database-url` y `${CREDENTIALS_DIRECTORY}/redis-url` (contenido recortado de espacios y saltos de línea).
+- Si el archivo correspondiente no existe, se usa `COMMAND_API_KEY`, `DATABASE_URL` o `REDIS_URL` del entorno como respaldo para desarrollo. Si no hay ninguna de las dos fuentes para un secreto, es un error de configuración.
 - `DATABASE_URL`, tras leerse, debe ser `postgres://` o `postgresql://`.
+- `REDIS_URL`, tras leerse, debe ser `redis://` o `rediss://`.
 - Los secretos **nunca** aparecen en logs, errores, auditoría ni en la configuración que se registra al arrancar (se muestran como `***`). Un error de lectura nombra la fuente (la variable o el archivo), nunca el valor.
 
 ### Errores de configuración
@@ -40,7 +41,7 @@ Se validan **todas** las variables y se reporta la lista completa en español (v
 
 ## Interfaces
 ```typescript
-interface AppConfig { /* una propiedad por variable, ya convertida; secretos en apiKey y databaseUrl */ }
+interface AppConfig { /* una propiedad por variable, ya convertida; secretos en apiKey, databaseUrl y redisUrl */ }
 function loadConfig(env: Record<string, string | undefined>, readFile: (path: string) => string): AppConfig;   // lanza ConfigError con la lista completa
 function redactConfig(config: AppConfig): Record<string, unknown>;                                            // para registrar, sin secretos
 
@@ -88,7 +89,7 @@ Cada 60 s se registra un `heartbeat` con: `dryRun`, número de rutas por estado 
 - [ ] `loadConfig` convierte y valida cada variable de la tabla; con defaults devuelve los valores de `architecture.md` §7.
 - [ ] Con varias variables inválidas, `ConfigError` lista **todas** (variable y problema), en español.
 - [ ] Los secretos se leen de `CREDENTIALS_DIRECTORY` primero y de las variables de entorno como respaldo; sin ninguna fuente, error.
-- [ ] `redactConfig` y todo lo que se registra al arrancar no contienen la API key ni la contraseña de la BD (prueba con valores reconocibles).
+- [ ] `redactConfig` y todo lo que se registra al arrancar no contienen la API key, la contraseña de la BD, la contraseña de Redis ni la URL completa de Redis (prueba con marcadores reconocibles).
 - [ ] `ENABLED_COMPANIES` se convierte en `Map` y rechaza duplicados y pares mal formados.
 - [ ] El gateway y el orquestador reciben el **mismo** valor de `dryRun`.
 - [ ] El `onAlert` del lector de tramas escribe en el `Logger` del orquestador.
