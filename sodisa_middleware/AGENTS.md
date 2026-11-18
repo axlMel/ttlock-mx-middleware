@@ -73,7 +73,7 @@ El tooling (`package.json`, `tsconfig.json` estricto, Jest y ESLint) vive en la 
 ## Variables de entorno esperadas
 Los valores por defecto y su significado están en `docs/architecture.md` §7.
 ```
-DATABASE_URL=
+DATABASE_URL= # (secreto): se entrega con LoadCredential como database-url; la variable de entorno es solo respaldo para desarrollo.
 REDIS_URL=
 ENABLED_COMPANIES=            # pares plataforma:api, ej. 364:2 (pruebas) o 364:1 (producción)
 ASSIGNMENT_TZ=UTC
@@ -88,7 +88,7 @@ CHAIN_BATCH_LIMIT=500
 CHAIN_OVERLAP_MS=10000
 PARTITION_REFRESH_MS=600000
 COMMAND_API_URL=
-COMMAND_API_KEY=              # secreto
+COMMAND_API_KEY= # (secreto): se entrega con LoadCredential como command-api-key; la variable de entorno es solo respaldo para desarrollo.
 COMMAND_API_TIMEOUT_MS=10000
 COMMAND_DRY_RUN=false
 AUDIT_LOG_DIR=./audit
