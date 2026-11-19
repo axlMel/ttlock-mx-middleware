@@ -39,7 +39,7 @@ Flujo obligatorio para cualquier tarea nueva o modificación:
 - Lint y formato: `npm run lint` / `npm run format`.
 
 ## Dominio: entidades clave
-- **Asignación** (`catalogos.tbl_asignacion_viaje`): vigente ⇔ `int_estado = 1` y `bol_enuso`. Su `int_id` es el `routeId` de logs y auditoría.
+- **Asignación** (`catalogos.tbl_asignacion_viaje`): vigente ⇔ int_estado ∈ {3, 4} y bol_enuso. Su `int_id` es el `routeId` de logs y auditoría.
 - **Ruta y puntos:** `int_idruta` lleva a `catalogos.tbl_punto_ruta` (orden por `int_orden`). `catalogos.tbl_ruta.int_tipo`: `0` con orden (v1), `1` desordenada (se omite con alerta).
 - **Sitio** (`catalogos_gis.tbl_sitio`): coordenadas (`g_posicion`) y radio (`int_radio`, metros; mínimo 50).
 - **Unidad → dispositivo → modelo:** `tbl_unidad`, `tbl_dispositivo`, modelo `25` = GV300W y `100` = GV310LAU (mapa estático).
@@ -77,7 +77,6 @@ DATABASE_URL= # (secreto): se entrega con LoadCredential como database-url; la v
 REDIS_URL=  # la variable de entorno es solo respaldo de desarrollo
 ENABLED_COMPANIES=            # pares plataforma:api, ej. 364:2 (pruebas) o 364:1 (producción)
 ASSIGNMENT_TZ=UTC
-START_MARGIN_MINUTES=15
 POLL_INTERVAL_MS_ROUTES=10000
 POLL_INTERVAL_MS_ACK=3000
 ACK_RETRY_BACKOFF_MS=60000

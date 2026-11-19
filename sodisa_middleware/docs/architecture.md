@@ -39,15 +39,16 @@ Relaciones: asignación → unidad → dispositivo → modelo; asignación → r
 Las tramas se identifican por `int_iddispositivo`.
 
 ## 4. Estados de la asignación
-Vigente ⇔ `int_estado = 1` y `bol_enuso`. Es lo único que el middleware atiende.
+Vigente ⇔ `bol_enuso` e `int_estado` ∈ {3, 4}. `bol_enuso = false` equivale a asignación eliminada. Es lo único que el middleware atiende.
 
 | `int_estado` | Nombre | Tratamiento |
 |---|---|---|
-| 1 | Asignada | Vigente |
-| -1, 0, 2, 3, 4, 5, 6, 7 | CanceladoEDI, SinAsignar, Cumplida, ATiempo, Tarde, Cancelado, Incumplida, Terminar | No vigente. Si había ruta en curso: reset y limpiar. El estado final se registra para saber por qué terminó. |
+| 1 | Asignada | Espera: con unidad asignada, aún no es hora de salir. No se configura. |
+| 3, 4 | ATiempo, Tarde | **Vigente.** 3 = a tiempo de salir; 4 = unidad retrasada, lista para salir. De 3 a 4 se sigue con la misma ruta. |
+| 2, 5, 6, 7 | Cumplida, Cancelado, Incumplida, Terminar | Deja de ser vigente. Si había ruta en curso: reset y limpiar. El estado final se registra. |
+| -1, 0 | CanceladoEDI, SinAsignar | Nunca vigente. |
 
-La BD pasa una asignación vencida directamente a `4`.
-**Inicio de ruta:** `ahora >= dt_hora_inicial - START_MARGIN_MINUTES` y `ahora < dt_hora_final`.
+**Inicio de ruta:** asignación vigente y `ahora < dt_hora_final`. No hay margen previo: el estado decide.
 **Zona horaria:** toda la BD guarda **UTC** (verificado: `dt_registro` de una asignación recién creada iba 6 horas adelante de la hora local). `ASSIGNMENT_TZ = UTC`.
 
 ## 5. Tramas por partición semanal
@@ -80,7 +81,6 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 | `REDIS_URL` | — | Estado, cursores, caché y cola. Secreto entregado por redis-url |
 | `ENABLED_COMPANIES` | — | Pares `plataforma:api` separados por coma. Pruebas `364:2`; producción `364:1` |
 | `ASSIGNMENT_TZ` | `UTC` | Zona de `dt_hora_inicial` y `dt_hora_final` (confirmada) |
-| `START_MARGIN_MINUTES` | `15` | Margen de inicio antes de `dt_hora_inicial` |
 | `POLL_INTERVAL_MS_ROUTES` | `10000` | Consulta de asignaciones (espaciado adaptativo, hasta 5×) |
 | `POLL_INTERVAL_MS_ACK` | `3000` | Consulta de tramas mientras haya equipos esperando |
 | `ACK_RETRY_BACKOFF_MS` | `60000` | Espera del ACK tras cada transmisión antes de retransmitir |
