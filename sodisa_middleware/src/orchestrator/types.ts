@@ -11,7 +11,7 @@ export interface Logger {
 }
 export interface OrchestratorOptions {
   enabledCompanies: Map<number, number>;
-  startMarginMinutes: number; pollIntervalMsRoutes: number; pollIntervalMsAck: number;
+  pollIntervalMsRoutes: number; pollIntervalMsAck: number;
   ackRetryBackoffMs: number; ackMaxRetries: number; ackResendEnabled: boolean; dryRun: boolean;
   now?: () => number;
 }

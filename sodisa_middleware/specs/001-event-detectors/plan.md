@@ -9,6 +9,7 @@
 6. **Un equipo por llamada, un lector por proceso.** El orquestador los recorre en secuencia; así la carga sobre la BD es predecible.
 7. **Alertas por callback** (`onAlert`), sin acoplar con el sistema de logs.
 8. **Todo configurable por parámetros**, nunca por `process.env`: la lectura de entorno es de 006.
+9. **Vigencia en una sola interfaz.** A1 usa el índice `empresa_por_estado4` con `int_estado IN (3, 4) AND bol_enuso`; `VIGENT_STATES` e `isActiveAssignment` se exportan por `index.ts` para que 002 aplique la misma regla a las filas de `getById`. Una prueba compara los literales SQL con la constante.
 
 ## Estructura
 ```
@@ -26,6 +27,8 @@ src/detectors/
 
 ## Orden de trabajo
 Mover `SqlClient` → asignaciones → `micros` → particiones → `initCursor` → `readNew` (deduplicación, ventana, límite) → cambio de partición y alertas → prueba de SQL (sin JOIN ni `SELECT *`).
+
+Enmienda de estados: actualizar A1 → exportar constante y predicado → probar filtro SQL, coincidencia de estados y filas no vigentes.
 
 ## Riesgos
 - Si la consulta devuelve `chainBatchLimit` filas, `hasMore` es verdadero. El cursor avanza si el lote contiene al menos una fila nueva; si todas son duplicadas, no avanza y se emite `CHAIN_WINDOW_SATURATED`.

@@ -113,7 +113,7 @@ export function buildApp(config: AppConfig, logger: Logger, factories: AppFactor
           scheduler = factories.createScheduler(config, queueRedis);
           orchestrator = createOrchestrator({ detectors: { assignments, chains }, catalog: { devices, plans },
             gateway, routeStates, cursors, scheduler, logger }, { enabledCompanies: config.enabledCompanies,
-            startMarginMinutes: config.startMarginMinutes, pollIntervalMsRoutes: config.pollIntervalMsRoutes,
+            pollIntervalMsRoutes: config.pollIntervalMsRoutes,
             pollIntervalMsAck: config.pollIntervalMsAck, ackRetryBackoffMs: config.ackRetryBackoffMs,
             ackMaxRetries: config.ackMaxRetries, ackResendEnabled: config.ackResendEnabled,
             dryRun: config.dryRun, now: factories.now });

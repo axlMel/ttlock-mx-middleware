@@ -9,7 +9,7 @@ const missingFile = (): never => { throw Object.assign(new Error('missing'), { c
 test('convierte defaults, pares y booleanos', () => {
   const config = loadConfig(valid, missingFile);
   expect(config.enabledCompanies).toEqual(new Map([[364, 2]]));
-  expect(config).toMatchObject({ assignmentTz: 'UTC', startMarginMinutes: 15, pollIntervalMsRoutes: 10000,
+  expect(config).toMatchObject({ assignmentTz: 'UTC', pollIntervalMsRoutes: 10000,
     pollIntervalMsAck: 3000, ackRetryBackoffMs: 60000, ackMaxRetries: 3,
     ackResendEnabled: true, catalogRevalidateMs: 300000, chainBatchLimit: 500,
     chainOverlapMs: 10000, partitionRefreshMs: 600000, commandApiTimeoutMs: 10000,
@@ -18,11 +18,18 @@ test('convierte defaults, pares y booleanos', () => {
     .toMatchObject({ dryRun: true, ackResendEnabled: false, chainOverlapMs: 0 });
 });
 
-test.each(['START_MARGIN_MINUTES', 'POLL_INTERVAL_MS_ROUTES', 'POLL_INTERVAL_MS_ACK',
+test.each(['POLL_INTERVAL_MS_ROUTES', 'POLL_INTERVAL_MS_ACK',
   'ACK_RETRY_BACKOFF_MS', 'ACK_MAX_RETRIES', 'CATALOG_REVALIDATE_MS', 'CHAIN_BATCH_LIMIT',
   'PARTITION_REFRESH_MS', 'COMMAND_API_TIMEOUT_MS'])('%s exige entero positivo', (name) => {
   expect(() => loadConfig({ ...valid, [name]: '0' }, missingFile)).toThrow(name);
   expect(() => loadConfig({ ...valid, [name]: '1.5' }, missingFile)).toThrow(name);
+});
+
+test('START_MARGIN_MINUTES obsoleta se ignora y no entra en la configuración registrada', () => {
+  const config = loadConfig({ ...valid, START_MARGIN_MINUTES: 'valor-inválido' }, missingFile);
+  expect(config).not.toHaveProperty('startMarginMinutes');
+  expect(redactConfig(config)).not.toHaveProperty('startMarginMinutes');
+  expect(JSON.stringify(redactConfig(config))).not.toContain('START_MARGIN_MINUTES');
 });
 
 test('valida todos los errores a la vez y no imprime valores secretos', () => {

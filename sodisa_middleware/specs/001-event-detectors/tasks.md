@@ -11,3 +11,4 @@
 - [x] **T9. Sin JOIN ni `SELECT *`.** Prueba sobre las cadenas SQL de `src/detectors/`.
 - [x] **T10. Entrada pública.** `index.ts` exporta solo lo de la spec.
 - [x] **T11. Cierre.** `npm run lint`, `npm run build` y `npm test` completos en verde. Fila de 001 en `AGENTS.md` actualizada (solo esa). Commit.
+- [x] **T12. Enmienda de estados.** A1 filtra 3 y 4 con `bol_enuso`; exportar `VIGENT_STATES` e `isActiveAssignment` por `index.ts`; actualizar fixture y probar la regla, el texto SQL y su concordancia con la constante.

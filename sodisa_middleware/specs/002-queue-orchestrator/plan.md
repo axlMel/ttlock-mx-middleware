@@ -11,6 +11,7 @@
 7. **Serial** = `stepSeq` en hexadecimal mayúsculas de 4 dígitos (`serial.ts`).
 8. **Reloj y `Logger` inyectables**; el orquestador no lee `process.env` (lo hace 006).
 9. **Ruta tipo 1:** se omite con alerta única en memoria; no se persiste nada.
+10. **Estados de asignación de 001.** `assignmentCycle` y la verificación de retransmisión usan `isActiveAssignment` del índice público de 001 para filas de `getById`; el reset con `closing = ASSIGNMENT_ENDED` se retransmite aun después de perder vigencia. El inicio solo exige vigencia y `ahora < horaFinal`. `START_MARGIN_MINUTES` deja de existir. Un cambio entre 3 y 4 conserva el estado y los temporizadores.
 
 ## Estructura
 ```
@@ -31,6 +32,8 @@ src/orchestrator/
 
 ## Orden de trabajo
 Tipos y serial → `transition.ts` con su tabla de pruebas → `FakeScheduler` y exclusión → `stepRunner` (transmisión, repetición, retransmisión) → `assignmentCycle` (inicio, cierre, ruta tipo 1) → `chainPoller` (aplicación, cursor tras aplicar) → recuperación al arrancar → adaptador de BullMQ → ruta completa de punta a punta con fakes.
+
+Enmienda de estados: retirar la opción del margen → usar el predicado de 001 en inicio, cierre y retransmisión → probar estado 1, inicio 3/4, continuidad y cierre.
 
 ## Riesgos
 - El traductor de `jobId` tiene prueba unitaria. El adaptador completo de BullMQ queda sin prueba de integración automática porque Redis en memoria no soporta sus scripts; se verifica en el despliegue sombra.

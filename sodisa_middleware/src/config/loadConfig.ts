@@ -3,7 +3,6 @@ import { readSecret } from './secrets';
 export interface AppConfig {
   enabledCompanies: Map<number, number>;
   assignmentTz: string;
-  startMarginMinutes: number;
   pollIntervalMsRoutes: number;
   pollIntervalMsAck: number;
   ackRetryBackoffMs: number;
@@ -97,7 +96,6 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: (p
   if (!auditLogDir.trim()) issues.push('AUDIT_LOG_DIR: la ruta no puede estar vacía.');
   const config: AppConfig = {
     enabledCompanies, assignmentTz,
-    startMarginMinutes: number('START_MARGIN_MINUTES', 15, 1),
     pollIntervalMsRoutes: number('POLL_INTERVAL_MS_ROUTES', 10000, 1),
     pollIntervalMsAck: number('POLL_INTERVAL_MS_ACK', 3000, 1),
     ackRetryBackoffMs: number('ACK_RETRY_BACKOFF_MS', 60000, 1),

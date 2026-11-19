@@ -1,4 +1,4 @@
-import type { AssignmentRow } from '../detectors';
+import { isActiveAssignment, type AssignmentRow } from '../detectors';
 import type { RouteState } from '../persistence';
 import { transition } from './transition';
 import { StepRunner } from './stepRunner';
@@ -26,7 +26,7 @@ export class AssignmentCycle {
       try { assignments.push(...await this.deps.detectors.assignments.listVigentes(companyId)); }
       catch { failed = true; this.deps.logger.error('assignment_poll_failed', { timestamp: new Date(this.now()).toISOString(), companyId }); }
     }
-    const vigente = new Map(assignments.filter((a) => a.estado === 1 && a.enUso).map((a) => [a.assignmentId, a]));
+    const vigente = new Map(assignments.filter(isActiveAssignment).map((a) => [a.assignmentId, a]));
     for (const assignmentId of [...this.unorderedAlerted]) if (!vigente.has(assignmentId)) this.unorderedAlerted.delete(assignmentId);
     const states = await this.deps.routeStates.list();
     for (const state of states) {
@@ -52,7 +52,7 @@ export class AssignmentCycle {
           return;
         }
         const row = await this.deps.detectors.assignments.getById(current.assignmentId);
-        if (row?.estado === 1 && row.enUso) return;
+        if (row && isActiveAssignment(row)) return;
         const result = transition(current, { kind: 'ASSIGNMENT_ENDED', finalEstado: row?.estado ?? null });
         if (result.state === current) return;
         if (!result.state) {
@@ -72,8 +72,8 @@ export class AssignmentCycle {
     }
     const selected = new Map<number, AssignmentRow>();
     for (const row of assignments) {
-      if (!this.opts.enabledCompanies.has(row.companyId) || row.estado !== 1 || !row.enUso) continue;
-      if (this.now() < row.horaInicial.getTime() - this.opts.startMarginMinutes * 60_000 || this.now() >= row.horaFinal.getTime()) continue;
+      if (!this.opts.enabledCompanies.has(row.companyId) || !isActiveAssignment(row)) continue;
+      if (this.now() >= row.horaFinal.getTime()) continue;
       const previous = selected.get(row.unitId);
       if (!previous || row.horaInicial.getTime() < previous.horaInicial.getTime() ||
         (row.horaInicial.getTime() === previous.horaInicial.getTime() && row.assignmentId < previous.assignmentId)) selected.set(row.unitId, row);

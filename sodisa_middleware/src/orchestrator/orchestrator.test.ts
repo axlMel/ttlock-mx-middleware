@@ -40,8 +40,8 @@ function setup(dryRun = false) {
   let plan: RoutePlan = { routeType: 0, points: [point(1, -99.128206), point(2, -99.129206)] };
   let planFails = false;
   const row: AssignmentRow = { assignmentId: 42, companyId: 364, unitId: 81, catalogRouteId: 17,
-    estado: 1, enUso: true, horaInicial: new Date(time - 1000), horaFinal: new Date(time + 3600000), modificadoEn: null };
-  const opts: OrchestratorOptions = { enabledCompanies: new Map([[364, 2]]), startMarginMinutes: 15,
+    estado: 3, enUso: true, horaInicial: new Date(time - 1000), horaFinal: new Date(time + 3600000), modificadoEn: null };
+  const opts: OrchestratorOptions = { enabledCompanies: new Map([[364, 2]]),
     pollIntervalMsRoutes: 10000, pollIntervalMsAck: 3000, ackRetryBackoffMs: 60000,
     ackMaxRetries: 3, ackResendEnabled: true, dryRun, now: () => time };
   const deps: OrchestratorDeps = {
@@ -101,6 +101,9 @@ test('ruta de dos puntos llega a COMPLETED con reset y seriales sucesivos', asyn
     h.frame(ack('0002')); await h.chains.run();
     expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
     expect(h.sent.map((request) => request.idempotencyKey)).toEqual(['42-0-1', '42-1-1', '42-2-1']);
+    await h.assignments.run();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
+    expect(h.sent).toHaveLength(3);
   } finally { h.redis.disconnect(); }
 });
 
@@ -189,6 +192,20 @@ test('cierre no vigente transmite reset y elimina tras su ACK', async () => {
   } finally { h.redis.disconnect(); }
 });
 
+test('el reset de cierre se retransmite aunque la asignación ya no sea vigente', async () => {
+  const h = setup();
+  try {
+    await h.assignments.run();
+    h.row.enUso = false;
+    await h.assignments.run();
+    const reset = h.sent[1].command;
+    await h.advance(60000);
+    expect(h.sent).toHaveLength(3);
+    expect(h.sent[2].command).toBe(reset);
+    expect(h.sent[2].idempotencyKey).toBe('42-1-2');
+  } finally { h.redis.disconnect(); }
+});
+
 test('ackResendEnabled=false conserva el paso y reprograma otra ventana', async () => {
   const h = setup();
   try {
@@ -227,16 +244,101 @@ test('ruta desordenada emite una sola alerta y no crea estado', async () => {
   } finally { h.redis.disconnect(); }
 });
 
-test('la ventana de inicio y la empresa habilitada restringen el arranque', async () => {
+test('horaInicial futura no impide iniciar un estado 3', async () => {
   const h = setup();
   try {
     h.row.horaInicial = new Date('2026-11-17T14:00:00Z');
     await h.assignments.run();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
+  } finally { h.redis.disconnect(); }
+});
+
+test('horaFinal vencida y empresa deshabilitada impiden iniciar', async () => {
+  const h = setup();
+  try {
+    h.row.horaFinal = new Date('2026-11-17T12:00:00Z');
+    await h.assignments.run();
     expect(await h.routeStates.list()).toEqual([]);
-    h.row.horaInicial = new Date('2026-11-17T11:59:00Z');
+    h.row.horaFinal = new Date('2026-11-17T13:00:00Z');
     h.opts.enabledCompanies.clear();
     await h.assignments.run();
     expect(await h.routeStates.list()).toEqual([]);
+  } finally { h.redis.disconnect(); }
+});
+
+test('estado 4 inicia directamente y el estado 1 espera sin consultar tramas ni transmitir', async () => {
+  const h = setup();
+  try {
+    h.row.estado = 1;
+    const initCursor = jest.spyOn(h.deps.detectors.chains, 'initCursor');
+    const readNew = jest.spyOn(h.deps.detectors.chains, 'readNew');
+    const resolve = jest.spyOn(h.deps.catalog.devices, 'resolveForRouteStart');
+    await h.assignments.run();
+    await h.chains.run();
+    expect(await h.routeStates.list()).toEqual([]);
+    expect(h.sent).toHaveLength(0);
+    expect(initCursor).not.toHaveBeenCalled();
+    expect(readNew).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    h.row.estado = 4;
+    h.row.enUso = false;
+    await h.assignments.run();
+    expect(await h.routeStates.list()).toEqual([]);
+    h.row.enUso = true;
+    await h.assignments.run();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
+    expect(h.sent).toHaveLength(1);
+  } finally { h.redis.disconnect(); }
+});
+
+test.each([-1, 0, 2, 5, 6, 7])('estado %s nunca inicia una ruta', async (estado) => {
+  const h = setup();
+  try {
+    h.row.estado = estado;
+    await h.assignments.run();
+    expect(await h.routeStates.list()).toEqual([]);
+    expect(h.sent).toHaveLength(0);
+  } finally { h.redis.disconnect(); }
+});
+
+test('el paso 3 a 4 y de regreso conserva estado y temporizador', async () => {
+  const h = setup();
+  try {
+    await h.assignments.run();
+    const original = await h.routeStates.get(42);
+    expect(h.scheduler.count()).toBe(1);
+    h.row.estado = 4;
+    await h.assignments.run();
+    expect(await h.routeStates.get(42)).toEqual(original);
+    expect(h.scheduler.count()).toBe(1);
+    h.row.estado = 3;
+    await h.assignments.run();
+    expect(await h.routeStates.get(42)).toEqual(original);
+    expect(h.scheduler.count()).toBe(1);
+    expect(h.sent).toHaveLength(1);
+  } finally { h.redis.disconnect(); }
+});
+
+test.each([1, 2, 5, 6, 7])('estado final %s cierra con reset tras una transmisión', async (estado) => {
+  const h = setup();
+  try {
+    await h.assignments.run();
+    h.row.estado = estado;
+    await h.assignments.run();
+    expect((await h.routeStates.get(42))?.closing).toEqual({ reason: 'ASSIGNMENT_ENDED', finalEstado: estado });
+    expect(h.sent).toHaveLength(2);
+    expect(h.sent[1].command).toContain(',0,0.000000,0.000000,50,');
+  } finally { h.redis.disconnect(); }
+});
+
+test('la retransmisión continúa al pasar de estado 3 a 4', async () => {
+  const h = setup();
+  try {
+    await h.assignments.run();
+    h.row.estado = 4;
+    await h.advance(60000);
+    expect(h.sent).toHaveLength(2);
+    expect(h.sent[1].idempotencyKey).toBe('42-0-2');
   } finally { h.redis.disconnect(); }
 });
 

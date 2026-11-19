@@ -13,6 +13,7 @@
 10. **Dueño del Scheduler.** `orchestrator.stop()` (002) ya cierra el `Scheduler`; 006 no lo cierra de nuevo. El apagado continúa con Redis y el pool incluso si `stop()` falla o supera 25 s.
 11. **Directorio de auditoría.** `loadConfig` solo valida que la ruta no esté vacía. El arranque crea y comprueba que `AUDIT_LOG_DIR` sea escribible antes de abrir PostgreSQL o Redis; un fallo es `ConfigError` (código 78).
 12. **Redacción de Redis.** `redactConfig` oculta la URL completa de Redis. Los errores de lectura o validación mencionan solo `REDIS_URL` o la ruta de la credencial, sin incluir su valor.
+13. **Sin margen de inicio.** El estado 3 o 4 de la asignación decide el inicio (001/002). `loadConfig` ignora `START_MARGIN_MINUTES`, aunque esté presente e inválido; la propiedad se elimina de `AppConfig`, del cableado y de `startup_config`.
 
 ## Estructura
 ```
@@ -31,6 +32,8 @@ Antes de escribir código, el agente revisa si ya existe algo de arranque en `sr
 
 ## Orden de trabajo
 Revisión de lo existente → `loadConfig` y secretos con pruebas → `redactConfig` → `buildApp` (cableado y arranque) → latido → apagado y señales → `main.ts` y scripts de `package.json` → `.env.example`.
+
+Enmienda de estados: retirar variable y propiedad → retirar cableado y línea del ejemplo de despliegue → probar que la variable se ignora y no se registra.
 
 ## Riesgos
 - BullMQ y el cliente de Redis comparten versión de `ioredis`: usar la que ya trae el proyecto.

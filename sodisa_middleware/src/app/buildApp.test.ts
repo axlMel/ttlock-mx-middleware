@@ -78,6 +78,7 @@ test('arranca en orden, cablea el mismo dryRun y las alertas, y oculta secretos'
   const [deps, opts] = jest.mocked(createOrchestrator).mock.calls[0];
   expect(opts.dryRun).toBe(true);
   expect(opts.enabledCompanies).toEqual(new Map([[364, 2]]));
+  expect(opts).not.toHaveProperty('startMarginMinutes');
   const result = await deps.gateway.send({ assignmentId: 42, deviceId: 9001, unitId: 81,
     apiCompanyId: 2, stepSeq: 0, transmissionSeq: 1, idempotencyKey: '42-0-1', command: 'AT+GTGEO=TEST$' });
   expect(result.kind).toBe('DRY_RUN');

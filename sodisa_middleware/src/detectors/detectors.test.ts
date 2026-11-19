@@ -7,7 +7,8 @@ import { ASSIGNMENT_SQL, ASSIGNMENTS_SQL } from './assignmentDetector';
 import { fromStartSql, latestSql, newSql, overlapIdsSql } from './chainReader';
 import { toMicros } from './micros';
 import { NAMESPACE_SQL, PARTITIONS_SQL, Partitions } from './partitions';
-import { createAssignmentDetector, createChainReader, type ChainAlert, type DetectorOptions } from './index';
+import { createAssignmentDetector, createChainReader, isActiveAssignment, VIGENT_STATES,
+  type AssignmentRow, type ChainAlert, type DetectorOptions } from './index';
 
 const raw = Buffer.from(readFileSync(join(__dirname, '../protocol/__fixtures__/gv300w-ack.txt'), 'utf8').trim());
 const t0 = '2026-11-17 12:00:00.000000';
@@ -48,6 +49,18 @@ test('A1 y A2 tipan filas y pasan zona no UTC como segundo parámetro', async ()
   expect(await detector.getById(1)).toBeNull();
   db.rows[ASSIGNMENT_SQL] = [{ ...assignment, int_id: 'abc' }];
   await expect(detector.getById(1)).rejects.toThrow('abc');
+});
+
+test('A1 filtra los mismos estados que el predicado público', () => {
+  const match = /int_estado IN \(([^)]+)\) AND bol_enuso/.exec(ASSIGNMENTS_SQL);
+  expect(match).not.toBeNull();
+  expect(match?.[1].split(',').map((value) => Number(value.trim()))).toEqual([...VIGENT_STATES]);
+  expect(VIGENT_STATES).toEqual([3, 4]);
+  for (const estado of [-1, 0, 1, 2, 3, 4, 5, 6, 7]) {
+    const row = { estado, enUso: true } as AssignmentRow;
+    expect(isActiveAssignment(row)).toBe(estado === 3 || estado === 4);
+    expect(isActiveAssignment({ ...row, enUso: false })).toBe(false);
+  }
 });
 
 test('microsegundos acepta 0 a 6 decimales y distingue 1 µs', () => {

@@ -22,7 +22,6 @@ interface Logger { debug|info|warn|error(event: string, fields?: Record<string, 
 
 interface OrchestratorOptions {
   enabledCompanies: Map<number, number>;   // plataforma -> companyId de la API (ENABLED_COMPANIES)
-  startMarginMinutes: number;              // START_MARGIN_MINUTES
   pollIntervalMsRoutes: number;            // POLL_INTERVAL_MS_ROUTES
   pollIntervalMsAck: number;               // POLL_INTERVAL_MS_ACK
   ackRetryBackoffMs: number;               // ACK_RETRY_BACKOFF_MS
@@ -55,8 +54,9 @@ type StepTask =
 Todo se exporta desde `src/orchestrator/index.ts`; es lo único que otros módulos pueden importar.
 
 ## Vigencia e inicio
-- **Vigente** ⇔ `int_estado = 1` y `bol_enuso` (ver `docs/architecture.md` §4).
-- **Inicio de ruta**: asignación vigente, empresa habilitada, sin `RouteState` y `ahora >= horaInicial - startMarginMinutes` y `ahora < horaFinal`.
+- **Vigente** ⇔ `isActiveAssignment(row)` de 001: `bol_enuso` e `int_estado` ∈ {3, 4}. El estado 1 espera; `bol_enuso = false` equivale a asignación eliminada.
+- **Inicio de ruta**: asignación vigente, empresa habilitada, sin `RouteState` y `ahora < horaFinal`. No hay margen previo: el estado decide cuándo comienza.
+- **Continuidad:** el paso de 3 a 4 (o de 4 a 3) con la ruta en curso no cierra ni reinicia nada; sigue el mismo `RouteState`, `stepSeq` y temporizadores.
 - Una asignación vigente por unidad. Si ya hay una en curso para la unidad, la otra se ignora con aviso hasta que la primera cierre. Si ninguna ha iniciado, se elige la de menor `horaInicial` y, en empate, la de menor `assignmentId`. Para esto se mantiene en memoria un índice `unitId → assignmentId`, reconstruido con `list()` al arrancar.
 - **Al iniciar** (en este orden): `resolveForRouteStart` (005) → `getPlan` con `forceFresh` (005) → si `routeType = 1`: alerta `ROUTE_TYPE_UNORDERED_SKIPPED` (una vez por asignación mientras siga vigente, sin persistir) y **no se crea estado** → `initCursor` (001) y guardarlo → crear el `RouteState` (`PENDING`, `stepSeq = 0`, `currentPointId` = primer punto, `routeType = 0`). Si algo falla (modelo desconocido, plan inválido, unidad inválida), se registra la alerta, **no se crea estado** y se reintenta en el siguiente ciclo.
 - El cursor del equipo se inicializa **antes** de la primera transmisión, para ignorar tramas anteriores.
@@ -127,8 +127,8 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 
 ## Cierre por asignación no vigente (fila 8)
 - Cada ciclo de asignaciones consulta `listVigentes` por empresa habilitada. Una asignación con estado propio que **no aparece** se consulta con `getById`.
-- Si su estado ya no es 1, `bol_enuso` es falso, o no existe, se cierra según la fila 8 o 10 y se registra el `finalEstado`.
-- El reset sigue el mismo ciclo de transmisión, ACK y retransmisión que cualquier paso.
+- Si `isActiveAssignment` da falso (estado fuera de {3, 4}, `bol_enuso` falso) o no existe, se cierra según la fila 8 o 10 y se registra el `finalEstado`.
+- El reset sigue el mismo ciclo de transmisión, ACK y retransmisión que cualquier paso. Si `closing = ASSIGNMENT_ENDED`, la comprobación de vigencia previa a `ACK_DEADLINE` no impide retransmitir ese reset.
 
 ## Lectura de tramas
 - Solo se consultan equipos con `RouteState` en `CONFIGURING` (con `pendingRequest`), `AWAITING_ACK`, `IN_ZONE` o `AWAITING_EXIT_ALERT`.
@@ -162,7 +162,7 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 - La auditoría de comandos la escribe el gateway (spec 007).
 
 ## Criterios de aceptación
-- [ ] No se inicia una asignación fuera de la ventana, de otra empresa, no vigente o con unidad ya en curso.
+- [ ] No se inicia una asignación en estado 1, 2, 5, 6, 7, −1 o 0, con `bol_enuso = false`, con `ahora >= horaFinal`, de otra empresa o con unidad ya en curso.
 - [ ] Una asignación de ruta tipo 1 no crea estado y emite una sola alerta mientras siga vigente.
 - [ ] Una ruta de 2 puntos con fakes pasa en orden por transmisión, ACK, entrada, salida, siguiente punto, reset, ACK del reset y `COMPLETED`.
 - [ ] Un ACK con serial de otro paso, un duplicado o un `zoneEvent` con `geofenceId` distinto de 0 se ignoran.
@@ -175,7 +175,11 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 - [ ] Reinicio en `AWAITING_ACK`: se respeta `ackDeadline` y no se duplican temporizadores.
 - [ ] Si se elimina o agrega un punto entre pasos, el siguiente punto es el primero no cumplido del plan nuevo; no se repite ni se salta ninguno.
 - [ ] Si `getPlan` falla al procesar una salida, el cursor no avanza y, al recuperarse, la salida se aplica una sola vez.
-- [ ] La asignación que pasa a estado 4 (u otro no vigente) cierra con reset si hubo transmisiones, o solo se elimina si no las hubo; el estado final queda registrado.
+- [ ] La asignación que pasa a 2, 5, 6 o 7, o que queda con `bol_enuso = false`, cierra con reset si hubo transmisiones, o solo se elimina si no las hubo; el estado final queda registrado.
+- [ ] Una asignación en estado 3 inicia la ruta; una que aparece directamente en estado 4 también.
+- [ ] Una asignación en estado 1 no crea `RouteState`, no consulta tramas ni transmite.
+- [ ] Una ruta en curso cuya asignación pasa de 3 a 4 conserva su `RouteState`, su `stepSeq` y sus temporizadores: no hay reset ni segundo hilo.
+- [ ] El reset de cierre por asignación no vigente se retransmite si falta su ACK, aunque `isActiveAssignment` sea falso.
 - [ ] Un equipo que nunca responde no bloquea a otro; dos eventos de la misma asignación no se procesan en paralelo.
 - [ ] Una salida se acepta desde `IN_ZONE` sin entrada previa.
 - [ ] El polling de tramas solo consulta equipos en espera, uno por uno, y se pone al día con `hasMore`.

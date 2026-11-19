@@ -20,13 +20,15 @@ Variables (defaults en `docs/architecture.md` §7):
 |---|---|
 | `ENABLED_COMPANIES` | Obligatoria. Pares `plataforma:api` separados por coma (`364:2`). Enteros positivos, sin plataformas repetidas. |
 | `ASSIGNMENT_TZ` (`UTC`) | Zona IANA válida (se comprueba con `Intl.DateTimeFormat`). |
-| `START_MARGIN_MINUTES` (15), `POLL_INTERVAL_MS_ROUTES` (10000), `POLL_INTERVAL_MS_ACK` (3000), `ACK_RETRY_BACKOFF_MS` (60000), `CATALOG_REVALIDATE_MS` (300000), `PARTITION_REFRESH_MS` (600000), `COMMAND_API_TIMEOUT_MS` (10000) | Enteros positivos. |
+| `POLL_INTERVAL_MS_ROUTES` (10000), `POLL_INTERVAL_MS_ACK` (3000), `ACK_RETRY_BACKOFF_MS` (60000), `CATALOG_REVALIDATE_MS` (300000), `PARTITION_REFRESH_MS` (600000), `COMMAND_API_TIMEOUT_MS` (10000) | Enteros positivos. |
 | `ACK_MAX_RETRIES` (3), `CHAIN_BATCH_LIMIT` (500) | Enteros ≥ 1. |
 | `CHAIN_OVERLAP_MS` (10000) | Entero ≥ 0. |
 | `ACK_RESEND_ENABLED` (`true`), `COMMAND_DRY_RUN` (`false`) | Solo `true` o `false`. |
 | `COMMAND_API_URL` | Obligatoria. URL `https://`. |
 | `AUDIT_LOG_DIR` (`./audit`) | Ruta no vacía. Se crea si no existe y se comprueba que puede escribirse antes de abrir conexiones; si falla, error de configuración (78). |
 | `REDIS_URL` | Obligatoria y secreta. Se lee primero de `${CREDENTIALS_DIRECTORY}/redis-url` y, solo para desarrollo, de `REDIS_URL` en el entorno. URL `redis://` o `rediss://`. |
+
+`START_MARGIN_MINUTES` se retiró: no se lee ni se valida. Si sigue en el entorno, se ignora sin error y no aparece en `startup_config`.
 
 ### Secretos
 Tres valores son secretos: la **API key de comandos**, la **URL de la BD** y la **URL de Redis**, que contienen contraseñas.
@@ -62,6 +64,7 @@ function buildApp(config: AppConfig, logger: Logger, factories: AppFactories): A
 - **Gateway y auditoría (007):** `createAuditLog(AUDIT_LOG_DIR)` y `createCommandGateway(audit, { apiUrl, apiKey, timeoutMs, dryRun })`.
 - **Detectores (001):** `ChainReader` creado con `onAlert` que escribe en el **mismo `Logger`** que recibe el orquestador (`chain_alert`, nivel `warn`).
 - **Orquestador (002):** recibe `dryRun` con **el mismo valor** que el gateway (una sola lectura de `COMMAND_DRY_RUN`) y `enabledCompanies` convertido a `Map`.
+- `src/app/` no pasa `startMarginMinutes` al orquestador.
 - Todo se importa solo desde las entradas públicas (`index.ts`) de cada módulo.
 
 ## Arranque
@@ -87,6 +90,7 @@ Cada 60 s se registra un `heartbeat` con: `dryRun`, número de rutas por estado 
 
 ## Criterios de aceptación
 - [ ] `loadConfig` convierte y valida cada variable de la tabla; con defaults devuelve los valores de `architecture.md` §7.
+- [ ] `START_MARGIN_MINUTES` se ignora aunque tenga un valor inválido; `AppConfig` y `startup_config` no lo contienen.
 - [ ] Con varias variables inválidas, `ConfigError` lista **todas** (variable y problema), en español.
 - [ ] Los secretos se leen de `CREDENTIALS_DIRECTORY` primero y de las variables de entorno como respaldo; sin ninguna fuente, error.
 - [ ] `redactConfig` y todo lo que se registra al arrancar no contienen la API key, la contraseña de la BD, la contraseña de Redis ni la URL completa de Redis (prueba con marcadores reconocibles).

@@ -1,4 +1,5 @@
 import { AuditUnavailableError, type GatewayRequest } from '../gateway';
+import { isActiveAssignment } from '../detectors';
 import type { RouteState } from '../persistence';
 import { transition } from './transition';
 import type { OrchestratorDeps, OrchestratorOptions, StepTask } from './types';
@@ -88,8 +89,10 @@ export class StepRunner {
       return;
     }
     if (state.fsmState !== 'AWAITING_ACK' || this.opts.dryRun) return;
-    const assignment = await this.deps.detectors.assignments.getById(state.assignmentId);
-    if (!assignment || assignment.estado !== 1 || !assignment.enUso) return;
+    if (state.closing?.reason !== 'ASSIGNMENT_ENDED') {
+      const assignment = await this.deps.detectors.assignments.getById(state.assignmentId);
+      if (!assignment || !isActiveAssignment(assignment)) return;
+    }
     const next = transition(state, { kind: 'ACK_DEADLINE', at: this.now(), backoffMs: this.opts.ackRetryBackoffMs,
       resend: this.opts.ackResendEnabled, dryRun: this.opts.dryRun });
     if (!next.state || next.state === state) return;

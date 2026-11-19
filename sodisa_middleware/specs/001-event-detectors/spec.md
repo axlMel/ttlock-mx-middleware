@@ -44,6 +44,8 @@ interface DetectorOptions {
 }
 function createAssignmentDetector(db: SqlClient, opts: Pick<DetectorOptions,'assignmentTz'>): AssignmentDetector;
 function createChainReader(db: SqlClient, opts: DetectorOptions): ChainReader;
+const VIGENT_STATES: readonly [3, 4];
+function isActiveAssignment(row: AssignmentRow): boolean; // row.enUso && VIGENT_STATES.includes(row.estado)
 ```
 `ChainCursor` está definido en `specs/004`. Todo se exporta desde `src/detectors/index.ts`; es lo único que otros módulos pueden importar.
 
@@ -55,7 +57,7 @@ SELECT int_id, int_idempresa, int_idunidad, int_idruta, int_estado, bol_enuso,
        dt_hora_final   AT TIME ZONE $2 AS dt_hora_final,
        dt_modificacion::text AS dt_modificacion
 FROM catalogos.tbl_asignacion_viaje
-WHERE int_idempresa = $1 AND int_estado = 1 AND bol_enuso;
+WHERE int_idempresa = $1 AND int_estado IN (3, 4) AND bol_enuso;
 
 -- A2. Una asignación por llave primaria (mismas columnas)
 SELECT int_id, int_idempresa, int_idunidad, int_idruta, int_estado, bol_enuso,
@@ -90,8 +92,24 @@ Las columnas `dt_hora_inicial`, `dt_hora_final`, `dt_modificacion` y `dt_trama` 
 
 ## Reglas
 **Asignaciones**
-- `listVigentes` solo devuelve `int_estado = 1` y `bol_enuso`. `getById` devuelve la fila sea cual sea su estado; `null` si no existe.
+- `listVigentes` solo devuelve filas con `int_estado` 3 o 4 y `bol_enuso` (ver sección “Estados”). Las filas en estado 1 no se devuelven. `getById` devuelve la fila sea cual sea su estado; `null` si no existe.
 - `int_id`, `int_idempresa`, `int_idunidad`, `int_idruta` y `int_estado` se convierten con `Number()` y se validan como enteros finitos; una fila inválida lanza un error con su `int_id`.
+
+## Estados
+| Valor | Nombre | Significado | Tratamiento |
+|---|---|---|---|
+| -1 | CanceladoEDI | Cancelado por integración | Nunca vigente |
+| 0 | SinAsignar | Sin unidad asignada | Nunca vigente |
+| 1 | Asignada | Con unidad asignada, aún no es hora de salir | Espera: no se consulta posición ni se configura |
+| 2 | Cumplida | Terminada normalmente por el sistema | Deja de ser vigente |
+| 3 | ATiempo | A tiempo de salir para la unidad | Vigente |
+| 4 | Tarde | Unidad retrasada, lista para salir | Vigente |
+| 5 | Cancelado | Terminada por el usuario | Deja de ser vigente |
+| 6 | Incumplida | Terminada por el usuario | Deja de ser vigente |
+| 7 | Terminar | ElevenMinds no lo usa ni lo documenta | Deja de ser vigente |
+
+Vigente ⇔ `isActiveAssignment(row)`: `row.enUso && VIGENT_STATES.includes(row.estado)`.
+Una asignación puede aparecer directamente en estado 4.
 
 **Tramas**
 - Un `ChainReader` por proceso. Se consulta **un equipo por llamada**; el orquestador las encadena de forma secuencial.
@@ -108,6 +126,8 @@ Las columnas `dt_hora_inicial`, `dt_hora_final`, `dt_modificacion` y `dt_trama` 
 - Consultas parametrizadas, sin JOINs ni `SELECT *`. Ninguna escritura en la BD.
 
 ## Criterios de aceptación
+- [ ] `listVigentes` usa el filtro `int_estado IN (3, 4) AND bol_enuso` (prueba sobre el texto de A1) y `isActiveAssignment` da verdadero solo para 3 y 4 con `enUso`, y falso para −1, 0, 1, 2, 5, 6, 7 y cualquier fila con `enUso = false`.
+- [ ] `VIGENT_STATES` coincide con la lista literal de A1 (prueba que extrae `IN (…)` del SQL y lo compara).
 - [ ] `listVigentes` devuelve filas tipadas y pasa `assignmentTz` como `$2`; el `Date` resultante corresponde a esa zona (prueba con una zona distinta de UTC).
 - [ ] `getById` devuelve una asignación no vigente y `null` si no existe. Una fila con id no numérico lanza error.
 - [ ] `initCursor` devuelve el cursor con ids de la ventana; sin tramas devuelve `dtTrama: null`; con la partición más nueva sin permiso usa la anterior y emite alerta.

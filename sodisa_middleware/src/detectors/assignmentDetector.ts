@@ -5,7 +5,11 @@ const COLUMNS = `int_id, int_idempresa, int_idunidad, int_idruta, int_estado, bo
        dt_hora_inicial AT TIME ZONE $2 AS dt_hora_inicial,
        dt_hora_final AT TIME ZONE $2 AS dt_hora_final,
        dt_modificacion::text AS dt_modificacion`;
-export const ASSIGNMENTS_SQL = `SELECT ${COLUMNS} FROM catalogos.tbl_asignacion_viaje WHERE int_idempresa = $1 AND int_estado = 1 AND bol_enuso`;
+export const VIGENT_STATES: readonly [3, 4] = [3, 4];
+export const isActiveAssignment = (row: AssignmentRow): boolean =>
+  row.enUso && VIGENT_STATES.includes(row.estado as 3 | 4);
+
+export const ASSIGNMENTS_SQL = `SELECT ${COLUMNS} FROM catalogos.tbl_asignacion_viaje WHERE int_idempresa = $1 AND int_estado IN (3, 4) AND bol_enuso`;
 export const ASSIGNMENT_SQL = `SELECT ${COLUMNS} FROM catalogos.tbl_asignacion_viaje WHERE int_id = $1`;
 
 function integer(value: unknown, id: unknown): number {

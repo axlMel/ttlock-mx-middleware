@@ -11,3 +11,4 @@
 - [x] **T9. Ruta completa.** Prueba de punta a punta con fakes: ruta de 2 puntos hasta `COMPLETED`; modo sombra hasta `AWAITING_ACK`; reinicio a mitad de ruta.
 - [x] **T10. Entrada pública.** `index.ts` exporta solo lo de la spec.
 - [x] **T11. Cierre.** `npm run lint`, `npm run build` y `npm test` completos en verde. Fila de 002 en `AGENTS.md` actualizada (solo esa). Commit.
+- [x] **T12. Enmienda de estados.** Quitar `startMarginMinutes`; usar `isActiveAssignment` de 001 en inicio, cierre y retransmisión; probar espera de 1, inicio en 3/4, continuidad 3 ↔ 4, cierres, retransmisión del reset y horaFinal.
