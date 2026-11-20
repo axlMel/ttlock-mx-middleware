@@ -48,7 +48,7 @@ Vigente ⇔ `bol_enuso` e `int_estado` ∈ {3, 4}. `bol_enuso = false` equivale 
 | 2, 5, 6, 7 | Cumplida, Cancelado, Incumplida, Terminar | Deja de ser vigente. Si había ruta en curso: reset y limpiar. El estado final se registra. |
 | -1, 0 | CanceladoEDI, SinAsignar | Nunca vigente. |
 
-**Inicio de ruta:** asignación vigente y `ahora < dt_hora_final`. No hay margen previo: el estado decide.
+**Inicio de ruta:** asignación vigente. La hora final (`dt_hora_final`) solo se llena cuando la asignación termina, por un usuario o por el sistema, y no interviene: decide el estado.
 **Zona horaria:** toda la BD guarda **UTC** (verificado: `dt_registro` de una asignación recién creada iba 6 horas adelante de la hora local). `ASSIGNMENT_TZ = UTC`.
 
 ## 5. Tramas por partición semanal
