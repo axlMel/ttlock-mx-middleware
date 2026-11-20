@@ -26,7 +26,7 @@ function mapRow(row: Record<string, unknown>): AssignmentRow {
     assignmentId: integer(id, id), companyId: integer(row.int_idempresa, id),
     unitId: integer(row.int_idunidad, id), catalogRouteId: integer(row.int_idruta, id),
     estado: integer(row.int_estado, id), enUso: row.bol_enuso === true,
-    horaInicial: row.dt_hora_inicial as Date, horaFinal: row.dt_hora_final as Date,
+    horaInicial: row.dt_hora_inicial as Date, horaFinal: row.dt_hora_final === null ? null : row.dt_hora_final as Date,
     modificadoEn: row.dt_modificacion === null ? null : String(row.dt_modificacion),
   };
 }

@@ -1,4 +1,5 @@
 import { buildGeoCommand, buildResetCommand, profileFor } from '../protocol';
+import { describeError } from '../common';
 import type { RouteState } from '../persistence';
 import { AssignmentCycle } from './assignmentCycle';
 import { ChainPoller } from './chainPoller';
@@ -33,7 +34,7 @@ export function createOrchestrator(deps: OrchestratorDeps, opts: OrchestratorOpt
     const timer = setTimeout(() => {
       timers.delete(timer);
       if (!running) return;
-      const work = run().catch(() => deps.logger.error('poll_failed', { timestamp: now(), source }))
+      const work = run().catch((error) => deps.logger.error('poll_failed', { timestamp: now(), source, ...describeError(error) }))
         .finally(() => { active.delete(work); loop(run, delay, source); });
       active.add(work);
     }, Math.max(0, delay()));
@@ -49,11 +50,14 @@ export function createOrchestrator(deps: OrchestratorDeps, opts: OrchestratorOpt
       running = true;
       for (const state of states) {
         try { await mutex.run(state.assignmentId, () => runner.resume(state)); }
-        catch { deps.logger.error('route_resume_failed', { timestamp: now(), deviceId: state.deviceId, routeId: state.assignmentId }); }
+        catch (error) { deps.logger.error('route_resume_failed', {
+          timestamp: now(), deviceId: state.deviceId, routeId: state.assignmentId, ...describeError(error) }); }
       }
       await Promise.all([
-        assignments.run().catch(() => deps.logger.error('poll_failed', { timestamp: now(), source: 'assignments' })),
-        chains.run().catch(() => deps.logger.error('poll_failed', { timestamp: now(), source: 'chains' })),
+        assignments.run().catch((error) => deps.logger.error('poll_failed', {
+          timestamp: now(), source: 'assignments', ...describeError(error) })),
+        chains.run().catch((error) => deps.logger.error('poll_failed', {
+          timestamp: now(), source: 'chains', ...describeError(error) })),
       ]);
       loop(() => assignments.run(), () => assignments.nextDelay(), 'assignments');
       loop(() => chains.run(), () => opts.pollIntervalMsAck, 'chains');

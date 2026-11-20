@@ -1,4 +1,5 @@
 import { isActiveAssignment, type AssignmentRow } from '../detectors';
+import { describeError } from '../common';
 import type { RouteState } from '../persistence';
 import { transition } from './transition';
 import { StepRunner } from './stepRunner';
@@ -21,12 +22,25 @@ export class AssignmentCycle {
   async run(): Promise<void> {
     let changed = false;
     let failed = false;
+    const failedAssignments = new Set<number>();
+    const assignmentFailed = (assignmentId: number, companyId: number, deviceId: number,
+      stage: string, error: unknown): void => {
+      failed = true;
+      failedAssignments.add(assignmentId);
+      this.deps.logger.error('assignment_failed', { ...this.fields(assignmentId, deviceId), assignmentId,
+        companyId, stage, ...describeError(error) });
+    };
     const assignments: AssignmentRow[] = [];
     for (const companyId of this.opts.enabledCompanies.keys()) {
       try { assignments.push(...await this.deps.detectors.assignments.listVigentes(companyId)); }
-      catch { failed = true; this.deps.logger.error('assignment_poll_failed', { timestamp: new Date(this.now()).toISOString(), companyId }); }
+      catch (error) { failed = true; this.deps.logger.error('assignment_poll_failed', {
+        timestamp: new Date(this.now()).toISOString(), companyId, ...describeError(error) }); }
     }
-    const vigente = new Map(assignments.filter(isActiveAssignment).map((a) => [a.assignmentId, a]));
+    const vigente = new Map<number, AssignmentRow>();
+    for (const row of assignments) {
+      try { if (isActiveAssignment(row)) vigente.set(row.assignmentId, row); }
+      catch (error) { assignmentFailed(row.assignmentId, row.companyId, 0, 'vigencia', error); }
+    }
     for (const assignmentId of [...this.unorderedAlerted]) if (!vigente.has(assignmentId)) this.unorderedAlerted.delete(assignmentId);
     const states = await this.deps.routeStates.list();
     for (const state of states) {
@@ -38,7 +52,10 @@ export class AssignmentCycle {
               if (current && (current.fsmState === 'PENDING' || (current.fsmState === 'CONFIGURING' && !current.pendingRequest)))
                 await this.runner.send(current);
             });
-          } catch { failed = true; this.deps.logger.error('route_resume_failed', this.fields(state.assignmentId, state.deviceId)); }
+          } catch (error) {
+            assignmentFailed(state.assignmentId, state.companyId, state.deviceId, 'recuperación', error);
+            this.deps.logger.error('route_resume_failed', { ...this.fields(state.assignmentId, state.deviceId), ...describeError(error) });
+          }
         }
         continue;
       }
@@ -68,24 +85,29 @@ export class AssignmentCycle {
         this.deps.logger.info('assignment_ended', { ...this.fields(current.assignmentId, current.deviceId), finalEstado: row?.estado ?? null });
         changed = true;
         });
-      } catch { failed = true; this.deps.logger.error('assignment_close_failed', this.fields(state.assignmentId, state.deviceId)); }
+      } catch (error) {
+        assignmentFailed(state.assignmentId, state.companyId, state.deviceId, 'cierre', error);
+        this.deps.logger.error('assignment_close_failed', { ...this.fields(state.assignmentId, state.deviceId), ...describeError(error) });
+      }
     }
     const selected = new Map<number, AssignmentRow>();
     for (const row of assignments) {
-      if (!this.opts.enabledCompanies.has(row.companyId) || !isActiveAssignment(row)) continue;
-      if (this.now() >= row.horaFinal.getTime()) continue;
-      const previous = selected.get(row.unitId);
-      if (!previous || row.horaInicial.getTime() < previous.horaInicial.getTime() ||
-        (row.horaInicial.getTime() === previous.horaInicial.getTime() && row.assignmentId < previous.assignmentId)) selected.set(row.unitId, row);
+      if (failedAssignments.has(row.assignmentId)) continue;
+      try {
+        if (!this.opts.enabledCompanies.has(row.companyId) || !isActiveAssignment(row)) continue;
+        const previous = selected.get(row.unitId);
+        if (!previous || row.horaInicial.getTime() < previous.horaInicial.getTime() ||
+          (row.horaInicial.getTime() === previous.horaInicial.getTime() && row.assignmentId < previous.assignmentId)) selected.set(row.unitId, row);
+      } catch (error) { assignmentFailed(row.assignmentId, row.companyId, 0, 'selección', error); }
     }
     for (const row of selected.values()) {
-      const occupying = this.unitIndex.get(row.unitId);
-      if (occupying !== undefined) {
-        if (occupying !== row.assignmentId) this.deps.logger.warn('unit_already_in_route', this.fields(row.assignmentId, 0));
-        continue;
-      }
-      if (await this.deps.routeStates.get(row.assignmentId)) continue;
       try {
+        const occupying = this.unitIndex.get(row.unitId);
+        if (occupying !== undefined) {
+          if (occupying !== row.assignmentId) this.deps.logger.warn('unit_already_in_route', this.fields(row.assignmentId, 0));
+          continue;
+        }
+        if (await this.deps.routeStates.get(row.assignmentId)) continue;
         await this.mutex.run(row.assignmentId, async () => {
         const device = await this.deps.catalog.devices.resolveForRouteStart(row.unitId, row.companyId);
         const plan = await this.deps.catalog.plans.getPlan(row.companyId, row.catalogRouteId, { forceFresh: true });
@@ -108,9 +130,13 @@ export class AssignmentCycle {
         changed = true;
         await this.runner.send(state);
         });
-      } catch { failed = true; this.deps.logger.error('assignment_start_failed', this.fields(row.assignmentId, 0)); }
+      } catch (error) {
+        assignmentFailed(row.assignmentId, row.companyId, 0, 'inicio', error);
+        this.deps.logger.error('assignment_start_failed', { ...this.fields(row.assignmentId, 0), ...describeError(error) });
+      }
     }
     this.delay = changed ? this.opts.pollIntervalMsRoutes : Math.min(this.opts.pollIntervalMsRoutes * 5, this.delay * 2);
-    this.deps.logger.debug('assignment_poll', { timestamp: new Date(this.now()).toISOString(), source: 'assignments', count: assignments.length, nextDelayMs: this.delay, failed });
+    this.deps.logger.debug('assignment_poll', { timestamp: new Date(this.now()).toISOString(), source: 'assignments',
+      count: assignments.length, failedAssignments: failedAssignments.size, nextDelayMs: this.delay, failed });
   }
 }

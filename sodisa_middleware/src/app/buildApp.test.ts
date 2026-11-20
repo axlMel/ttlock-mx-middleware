@@ -98,11 +98,15 @@ test('arranca en orden, cablea el mismo dryRun y las alertas, y oculta secretos'
 
 test('un fallo de PostgreSQL o Redis impide arrancar el orquestador y cierra recursos', async () => {
   const pg = fixture();
-  (pg.pool.query as jest.Mock).mockRejectedValueOnce(new Error('<valor-db>'));
+  (pg.pool.query as jest.Mock).mockRejectedValueOnce(Object.assign(new Error('<valor-db>'), { code: '28P01' }));
   await expect(buildApp(pg.config, pg.logger, pg.factories).start()).rejects.toThrow();
   expect(createOrchestrator).not.toHaveBeenCalled();
   expect(pg.trace).toContain('pg:close');
-  expect(pg.logger.error).toHaveBeenCalledWith('startup_failed', expect.objectContaining({ stage: 'PostgreSQL' }));
+  expect(pg.logger.error).toHaveBeenCalledWith('startup_failed', expect.objectContaining({
+    stage: 'PostgreSQL', errorName: 'Error', errorCode: '28P01',
+  }));
+  const startup = jest.mocked(pg.logger.error).mock.calls.find(([event]) => event === 'startup_failed')?.[1];
+  expect(startup).not.toHaveProperty('errorMessage');
   expect(JSON.stringify(jest.mocked(pg.logger.error).mock.calls)).not.toContain('<valor-db>');
   const redis = fixture();
   jest.mocked(redis.stateRedis.ping).mockRejectedValueOnce(new Error('offline'));

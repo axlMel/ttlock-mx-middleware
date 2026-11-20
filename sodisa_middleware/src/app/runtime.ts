@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config';
+import { describeError } from '../common';
 import { ConfigError } from '../config';
 import type { Logger } from '../orchestrator';
 import { buildApp } from './buildApp';
@@ -43,7 +44,11 @@ export async function runProcess(load: () => AppConfig, port: ProcessPort, logge
   } catch (error) {
     startupFailed = true;
     if (error instanceof ConfigError) logger.error('config_invalid', { timestamp: timestamp(), reason: error.message });
-    else logger.error('startup_failed', { timestamp: timestamp(), reason: 'No se pudo iniciar el servicio.' });
+    else {
+      const { errorName, errorCode } = describeError(error);
+      logger.error('startup_failed', { timestamp: timestamp(), reason: 'No se pudo iniciar el servicio.',
+        errorName, ...(errorCode === undefined ? {} : { errorCode }) });
+    }
     try { await app?.shutdown('startup_failed'); }
     catch { logger.error('shutdown_failed', { timestamp: timestamp(), reason: 'No se pudieron cerrar todos los recursos.' }); }
     port.exitCode = error instanceof ConfigError ? 78 : 1;

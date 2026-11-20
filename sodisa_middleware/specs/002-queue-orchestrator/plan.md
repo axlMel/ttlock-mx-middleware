@@ -11,7 +11,9 @@
 7. **Serial** = `stepSeq` en hexadecimal mayúsculas de 4 dígitos (`serial.ts`).
 8. **Reloj y `Logger` inyectables**; el orquestador no lee `process.env` (lo hace 006).
 9. **Ruta tipo 1:** se omite con alerta única en memoria; no se persiste nada.
-10. **Estados de asignación de 001.** `assignmentCycle` y la verificación de retransmisión usan `isActiveAssignment` del índice público de 001 para filas de `getById`; el reset con `closing = ASSIGNMENT_ENDED` se retransmite aun después de perder vigencia. El inicio solo exige vigencia y `ahora < horaFinal`. `START_MARGIN_MINUTES` deja de existir. Un cambio entre 3 y 4 conserva el estado y los temporizadores.
+10. **Estados de asignación de 001.** `assignmentCycle` y la verificación de retransmisión usan `isActiveAssignment` del índice público de 001 para filas de `getById`; el reset con `closing = ASSIGNMENT_ENDED` se retransmite aun después de perder vigencia. El inicio solo exige vigencia; `horaFinal` es informativa y `START_MARGIN_MINUTES` no existe. Un cambio entre 3 y 4 conserva el estado y los temporizadores.
+11. **Aislamiento por asignación.** Capturar fallos dentro de cada candidato antes de pasar al siguiente; los fallos por empresa sin `assignmentId` no aumentan `failedAssignments`. Conservar eventos especializados y registrar también `assignment_failed` para una asignación que no pudo procesarse.
+12. **Diagnóstico compartido.** `src/common/errors.ts` expone `describeError` por `src/common/index.ts`, autorizado para 002 y 006. Redactar URLs antes de truncar evita mostrar una contraseña cortada sin el `@` final. No registrar errores crudos.
 
 ## Estructura
 ```
@@ -34,6 +36,8 @@ src/orchestrator/
 Tipos y serial → `transition.ts` con su tabla de pruebas → `FakeScheduler` y exclusión → `stepRunner` (transmisión, repetición, retransmisión) → `assignmentCycle` (inicio, cierre, ruta tipo 1) → `chainPoller` (aplicación, cursor tras aplicar) → recuperación al arrancar → adaptador de BullMQ → ruta completa de punta a punta con fakes.
 
 Enmienda de estados: retirar la opción del margen → usar el predicado de 001 en inicio, cierre y retransmisión → probar estado 1, inicio 3/4, continuidad y cierre.
+
+Enmienda de hora final y errores: eliminar la comparación → aislar selección/inicio por fila y contar fallos → añadir el descriptor común y aplicarlo a todos los registros pedidos → probar continuidad y redacción.
 
 ## Riesgos
 - El traductor de `jobId` tiene prueba unitaria. El adaptador completo de BullMQ queda sin prueba de integración automática porque Redis en memoria no soporta sus scripts; se verifica en el despliegue sombra.

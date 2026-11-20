@@ -10,6 +10,7 @@
 7. **Alertas por callback** (`onAlert`), sin acoplar con el sistema de logs.
 8. **Todo configurable por parámetros**, nunca por `process.env`: la lectura de entorno es de 006.
 9. **Vigencia en una sola interfaz.** A1 usa el índice `empresa_por_estado4` con `int_estado IN (3, 4) AND bol_enuso`; `VIGENT_STATES` e `isActiveAssignment` se exportan por `index.ts` para que 002 aplique la misma regla a las filas de `getById`. Una prueba compara los literales SQL con la constante.
+10. **Hora final informativa.** A1 y A2 conservan el SQL actual; el mapeo preserva `NULL` como `null` y tipa `horaFinal` como `Date | null`, porque se rellena al terminar la asignación.
 
 ## Estructura
 ```
@@ -29,6 +30,8 @@ src/detectors/
 Mover `SqlClient` → asignaciones → `micros` → particiones → `initCursor` → `readNew` (deduplicación, ventana, límite) → cambio de partición y alertas → prueba de SQL (sin JOIN ni `SELECT *`).
 
 Enmienda de estados: actualizar A1 → exportar constante y predicado → probar filtro SQL, coincidencia de estados y filas no vigentes.
+
+Enmienda de hora final: ajustar tipo y mapeo → probar `null` y fecha sin cambiar A1/A2.
 
 ## Riesgos
 - Si la consulta devuelve `chainBatchLimit` filas, `hasMore` es verdadero. El cursor avanza si el lote contiene al menos una fila nueva; si todas son duplicadas, no avanza y se emite `CHAIN_WINDOW_SATURATED`.

@@ -14,7 +14,7 @@ Este middleware corre sin interfaz ni operador. Por eso:
 - **Nunca se detiene por un error:** un fallo en un equipo, en la API o en una consulta se registra y no afecta a otros equipos ni al siguiente ciclo.
 
 ## Módulos que usa
-001 (asignaciones y tramas), 003 (comandos y lectura de tramas), 004 (estado), 005 (unidad y plan), 007 (API y auditoría). Solo a través de sus `index.ts`.
+001 (asignaciones y tramas), 003 (comandos y lectura de tramas), 004 (estado), 005 (unidad y plan), 007 (API y auditoría), y `src/common/` (descripción segura de errores). Solo a través de sus `index.ts`.
 
 ## Interfaces
 ```typescript
@@ -52,10 +52,11 @@ type StepTask =
   | { kind: 'API_RETRY';    assignmentId: number; stepSeq: number; transmissionSeq: number; attempt: number };
 ```
 Todo se exporta desde `src/orchestrator/index.ts`; es lo único que otros módulos pueden importar.
+`src/common/index.ts` exporta `describeError(error: unknown): { errorName: string; errorCode?: string; errorMessage: string }` para 002 y 006. `errorName` es `error.name` para `Error`, o `typeof` en otro caso; `errorCode` es el código textual o numérico convertido a texto. `errorMessage` usa el mensaje del error, redacta credenciales de URL (`://usuario:clave@` → `://***@`) y **después** trunca a 200 caracteres.
 
 ## Vigencia e inicio
 - **Vigente** ⇔ `isActiveAssignment(row)` de 001: `bol_enuso` e `int_estado` ∈ {3, 4}. El estado 1 espera; `bol_enuso = false` equivale a asignación eliminada.
-- **Inicio de ruta**: asignación vigente, empresa habilitada, sin `RouteState` y `ahora < horaFinal`. No hay margen previo: el estado decide cuándo comienza.
+- **Inicio de ruta**: asignación vigente, empresa habilitada y sin `RouteState`. La hora final no interviene: solo se llena cuando la asignación termina, y la vigencia la decide el estado.
 - **Continuidad:** el paso de 3 a 4 (o de 4 a 3) con la ruta en curso no cierra ni reinicia nada; sigue el mismo `RouteState`, `stepSeq` y temporizadores.
 - Una asignación vigente por unidad. Si ya hay una en curso para la unidad, la otra se ignora con aviso hasta que la primera cierre. Si ninguna ha iniciado, se elige la de menor `horaInicial` y, en empate, la de menor `assignmentId`. Para esto se mantiene en memoria un índice `unitId → assignmentId`, reconstruido con `list()` al arrancar.
 - **Al iniciar** (en este orden): `resolveForRouteStart` (005) → `getPlan` con `forceFresh` (005) → si `routeType = 1`: alerta `ROUTE_TYPE_UNORDERED_SKIPPED` (una vez por asignación mientras siga vigente, sin persistir) y **no se crea estado** → `initCursor` (001) y guardarlo → crear el `RouteState` (`PENDING`, `stepSeq = 0`, `currentPointId` = primer punto, `routeType = 0`). Si algo falla (modelo desconocido, plan inválido, unidad inválida), se registra la alerta, **no se crea estado** y se reintenta en el siguiente ciclo.
@@ -140,8 +141,12 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 
 ## Polling de asignaciones
 - Una consulta `listVigentes` por empresa habilitada cada `pollIntervalMsRoutes`.
+- Cada asignación se procesa en su propio `try/catch`, incluida su selección e inicio o su recuperación/cierre. Si falla, se registra `assignment_failed` (`error`) con `assignmentId`, `companyId` y la causa de `describeError`; el ciclo sigue con las demás. `assignment_poll` incluye `failedAssignments`, cantidad de asignaciones distintas que fallaron; un error de consulta sin asignación identificable no se cuenta ahí.
 - Espaciado adaptativo: con novedad (asignación nueva, estado cambiado) vuelve al intervalo base; sin novedad el retraso se duplica hasta 5×. Un error se registra, aplica el mismo espaciado y el ciclo siguiente se programa siempre.
 - Es independiente de los reintentos de ACK y no cancela ni falla nada.
+
+## Causas de error en logs
+`poll_failed`, `assignment_poll_failed`, `chain_poll_failed`, `route_resume_failed` y `assignment_failed` registran `errorName`, `errorCode` si existe y `errorMessage` desde `describeError`. Los eventos especializados de inicio y cierre conservan su nombre y también registran la causa. Nunca se registra el objeto de error crudo.
 
 ## Arranque y reinicio
 `start()` lee todos los `RouteState` (`list()`), reconstruye el índice `unitId → assignmentId` y retoma cada ruta:
@@ -162,7 +167,12 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 - La auditoría de comandos la escribe el gateway (spec 007).
 
 ## Criterios de aceptación
-- [ ] No se inicia una asignación en estado 1, 2, 5, 6, 7, −1 o 0, con `bol_enuso = false`, con `ahora >= horaFinal`, de otra empresa o con unidad ya en curso.
+- [ ] No se inicia una asignación en estado 1, 2, 5, 6, 7, −1 o 0, con `bol_enuso = false`, de otra empresa o con unidad ya en curso.
+- [ ] Una asignación en estado 3 y otra en estado 4, ambas con `horaFinal` nula, inician su ruta.
+- [ ] El valor de `horaFinal` (nulo, pasado o futuro) no cambia la decisión de inicio: solo cuentan `enUso` y el estado.
+- [ ] Con dos asignaciones vigentes, si la primera lanza un error inesperado, la segunda inicia y se registra `assignment_failed` con el `assignmentId` de la primera; `assignment_poll.failedAssignments` cuenta una.
+- [ ] `describeError` redacta `postgres://u:<valor>@host/db` como `postgres://***@host/db` y trunca el resultado a 200 caracteres.
+- [ ] `poll_failed` registra `errorName`, `errorCode` si existe y `errorMessage` sin credenciales.
 - [ ] Una asignación de ruta tipo 1 no crea estado y emite una sola alerta mientras siga vigente.
 - [ ] Una ruta de 2 puntos con fakes pasa en orden por transmisión, ACK, entrada, salida, siguiente punto, reset, ACK del reset y `COMPLETED`.
 - [ ] Un ACK con serial de otro paso, un duplicado o un `zoneEvent` con `geofenceId` distinto de 0 se ignoran.

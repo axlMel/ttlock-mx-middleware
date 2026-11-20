@@ -51,6 +51,15 @@ test('A1 y A2 tipan filas y pasan zona no UTC como segundo parámetro', async ()
   await expect(detector.getById(1)).rejects.toThrow('abc');
 });
 
+test('hora final nula se conserva en A1 y una fecha se entrega como Date en A2', async () => {
+  const db = new FakeSql();
+  db.rows[ASSIGNMENTS_SQL] = [{ ...assignment, dt_hora_final: null }];
+  db.rows[ASSIGNMENT_SQL] = [assignment];
+  const detector = createAssignmentDetector(db, { assignmentTz: 'UTC' });
+  expect((await detector.listVigentes(364))[0].horaFinal).toBeNull();
+  expect((await detector.getById(1410255))?.horaFinal).toEqual(assignment.dt_hora_final);
+});
+
 test('A1 filtra los mismos estados que el predicado público', () => {
   const match = /int_estado IN \(([^)]+)\) AND bol_enuso/.exec(ASSIGNMENTS_SQL);
   expect(match).not.toBeNull();

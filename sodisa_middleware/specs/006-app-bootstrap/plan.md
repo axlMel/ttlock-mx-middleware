@@ -14,6 +14,7 @@
 11. **Directorio de auditoría.** `loadConfig` solo valida que la ruta no esté vacía. El arranque crea y comprueba que `AUDIT_LOG_DIR` sea escribible antes de abrir PostgreSQL o Redis; un fallo es `ConfigError` (código 78).
 12. **Redacción de Redis.** `redactConfig` oculta la URL completa de Redis. Los errores de lectura o validación mencionan solo `REDIS_URL` o la ruta de la credencial, sin incluir su valor.
 13. **Sin margen de inicio.** El estado 3 o 4 de la asignación decide el inicio (001/002). `loadConfig` ignora `START_MARGIN_MINUTES`, aunque esté presente e inválido; la propiedad se elimina de `AppConfig`, del cableado y de `startup_config`.
+14. **Causa segura de fallo de arranque.** Importar `describeError` desde la entrada pública `src/common/index.ts`, definida con 002; registrar solo nombre y código en `startup_failed`, además del `stage` existente en `buildApp`. Omitir el mensaje porque puede contener credenciales.
 
 ## Estructura
 ```
@@ -34,6 +35,8 @@ Antes de escribir código, el agente revisa si ya existe algo de arranque en `sr
 Revisión de lo existente → `loadConfig` y secretos con pruebas → `redactConfig` → `buildApp` (cableado y arranque) → latido → apagado y señales → `main.ts` y scripts de `package.json` → `.env.example`.
 
 Enmienda de estados: retirar variable y propiedad → retirar cableado y línea del ejemplo de despliegue → probar que la variable se ignora y no se registra.
+
+Enmienda de diagnóstico: usar el descriptor común en ambos registros `startup_failed` → probar código y ausencia del mensaje.
 
 ## Riesgos
 - BullMQ y el cliente de Redis comparten versión de `ioredis`: usar la que ya trae el proyecto.

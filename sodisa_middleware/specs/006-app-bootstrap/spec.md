@@ -57,6 +57,7 @@ interface App { start(): Promise<void>; shutdown(reason: string): Promise<void>;
 function buildApp(config: AppConfig, logger: Logger, factories: AppFactories): App;
 ```
 `src/main.ts` solo une `loadConfig` con `process.env`, el logger real, las fábricas reales y las señales; no tiene lógica propia.
+Para los fallos de arranque usa `describeError` desde `src/common/index.ts` (contrato compartido con 002). `startup_failed` registra `errorName` y `errorCode` si existe, **sin** `errorMessage`; el registro de `buildApp` conserva `stage`. No se registra el error crudo ni se exponen credenciales.
 
 ## Cableado (`buildApp`)
 - **Pool de PostgreSQL:** máximo **3** conexiones, `statement_timeout` de **5 s**, `application_name = gtlock-middleware`. Un `SqlClient` (spec 001) adapta `pool.query`.
@@ -89,6 +90,7 @@ Cada 60 s se registra un `heartbeat` con: `dryRun`, número de rutas por estado 
 - `uncaughtException` y `unhandledRejection`: se registra el error a nivel `error` y se sale con código 1. El estado vive en Redis, así que reiniciar es seguro.
 
 ## Criterios de aceptación
+- [ ] `startup_failed` con código `28P01` registra `errorCode: '28P01'`, conserva `stage` donde corresponde y no registra el mensaje del error.
 - [ ] `loadConfig` convierte y valida cada variable de la tabla; con defaults devuelve los valores de `architecture.md` §7.
 - [ ] `START_MARGIN_MINUTES` se ignora aunque tenga un valor inválido; `AppConfig` y `startup_config` no lo contienen.
 - [ ] Con varias variables inválidas, `ConfigError` lista **todas** (variable y problema), en español.

@@ -253,16 +253,128 @@ test('horaInicial futura no impide iniciar un estado 3', async () => {
   } finally { h.redis.disconnect(); }
 });
 
-test('horaFinal vencida y empresa deshabilitada impiden iniciar', async () => {
+test('empresa deshabilitada impide iniciar', async () => {
   const h = setup();
   try {
-    h.row.horaFinal = new Date('2026-11-17T12:00:00Z');
-    await h.assignments.run();
-    expect(await h.routeStates.list()).toEqual([]);
-    h.row.horaFinal = new Date('2026-11-17T13:00:00Z');
     h.opts.enabledCompanies.clear();
     await h.assignments.run();
     expect(await h.routeStates.list()).toEqual([]);
+  } finally { h.redis.disconnect(); }
+});
+
+test.each([3, 4])('estado %s inicia con hora final nula', async (estado) => {
+  const h = setup();
+  try {
+    h.row.estado = estado;
+    h.row.horaFinal = null;
+    await h.assignments.run();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
+  } finally { h.redis.disconnect(); }
+});
+
+test.each([null, new Date('2026-11-17T11:00:00Z'), new Date('2026-11-17T14:00:00Z')])(
+  'la hora final %s no altera el inicio de una asignación vigente', async (horaFinal) => {
+  const h = setup();
+  try {
+    h.row.horaFinal = horaFinal;
+    await h.assignments.run();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
+  } finally { h.redis.disconnect(); }
+  });
+
+test('un error inesperado en la primera asignación deja iniciar a la segunda', async () => {
+  const h = setup();
+  try {
+    const other: AssignmentRow = { ...h.row, assignmentId: 43, unitId: 82 };
+    h.deps.detectors.assignments.listVigentes = async () => [h.row, other];
+    h.deps.catalog.devices.resolveForRouteStart = async (unitId, companyId) =>
+      ({ unitId, companyId, deviceId: 9000 + unitId, modelId: 25, model: 'GV300W' });
+    const get = h.routeStates.get.bind(h.routeStates);
+    jest.spyOn(h.routeStates, 'get').mockImplementation(async (id) => {
+      if (id === 42) throw Object.assign(new Error('postgres://u:<valor>@host/db'), { code: '28P01' });
+      return get(id);
+    });
+    h.deps.logger.error = jest.fn();
+    h.deps.logger.debug = jest.fn();
+    await h.assignments.run();
+    expect((await h.routeStates.list()).map((state) => state.assignmentId)).toEqual([43]);
+    expect(h.sent).toHaveLength(1);
+    expect(h.deps.logger.error).toHaveBeenCalledWith('assignment_failed', expect.objectContaining({
+      assignmentId: 42, companyId: 364, errorName: 'Error', errorCode: '28P01',
+      errorMessage: 'postgres://***@host/db',
+    }));
+    expect(h.deps.logger.debug).toHaveBeenCalledWith('assignment_poll', expect.objectContaining({ failedAssignments: 1 }));
+    expect(JSON.stringify(jest.mocked(h.deps.logger.error).mock.calls)).not.toContain('<valor>');
+  } finally { h.redis.disconnect(); }
+});
+
+test('poll_failed conserva causa y código sin credenciales', async () => {
+  const h = setup();
+  try {
+    h.deps.logger.error = jest.fn();
+    const list = h.routeStates.list.bind(h.routeStates);
+    let calls = 0;
+    jest.spyOn(h.routeStates, 'list').mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) return list();
+      throw Object.assign(new Error('postgres://u:<valor>@host/db'), { code: 'ECONNREFUSED' });
+    });
+    const orchestrator = createOrchestrator(h.deps, { ...h.opts, pollIntervalMsRoutes: 60000, pollIntervalMsAck: 60000 });
+    await orchestrator.start();
+    expect(h.deps.logger.error).toHaveBeenCalledWith('poll_failed', expect.objectContaining({
+      errorName: 'Error', errorCode: 'ECONNREFUSED', errorMessage: 'postgres://***@host/db',
+    }));
+    expect(JSON.stringify(jest.mocked(h.deps.logger.error).mock.calls)).not.toContain('<valor>');
+    await orchestrator.stop();
+  } finally { h.redis.disconnect(); }
+});
+
+test('el error de consulta de empresa conserva causa y no cuenta una asignación', async () => {
+  const h = setup();
+  try {
+    h.deps.detectors.assignments.listVigentes = async () => {
+      throw Object.assign(new Error('postgres://u:<valor>@host/db'), { code: '28P01' });
+    };
+    h.deps.logger.error = jest.fn();
+    h.deps.logger.debug = jest.fn();
+    await h.assignments.run();
+    expect(h.deps.logger.error).toHaveBeenCalledWith('assignment_poll_failed', expect.objectContaining({
+      companyId: 364, errorCode: '28P01', errorMessage: 'postgres://***@host/db',
+    }));
+    expect(h.deps.logger.debug).toHaveBeenCalledWith('assignment_poll', expect.objectContaining({ failedAssignments: 0 }));
+  } finally { h.redis.disconnect(); }
+});
+
+test('chain_poll_failed registra la causa redactada del equipo', async () => {
+  const h = setup();
+  try {
+    await h.assignments.run();
+    h.deps.detectors.chains.readNew = async () => {
+      throw Object.assign(new Error('redis://:<valor>@host/0'), { code: 'ECONNREFUSED' });
+    };
+    h.deps.logger.error = jest.fn();
+    await h.chains.run();
+    expect(h.deps.logger.error).toHaveBeenCalledWith('chain_poll_failed', expect.objectContaining({
+      routeId: 42, deviceId: 9001, errorCode: 'ECONNREFUSED', errorMessage: 'redis://***@host/0',
+    }));
+  } finally { h.redis.disconnect(); }
+});
+
+test('route_resume_failed registra causa y el fallo pertenece a esa asignación', async () => {
+  const h = setup();
+  try {
+    await h.assignments.run();
+    await h.routeStates.set({ ...(await h.routeStates.get(42))!, fsmState: 'PENDING', transmissionSeq: 0,
+      pendingRequest: null });
+    jest.spyOn(h.routeStates, 'set').mockRejectedValueOnce(Object.assign(new Error('postgres://u:<valor>@host/db'),
+      { code: '28P01' }));
+    h.deps.logger.error = jest.fn();
+    h.deps.logger.debug = jest.fn();
+    await h.assignments.run();
+    expect(h.deps.logger.error).toHaveBeenCalledWith('route_resume_failed', expect.objectContaining({
+      routeId: 42, errorCode: '28P01', errorMessage: 'postgres://***@host/db',
+    }));
+    expect(h.deps.logger.debug).toHaveBeenCalledWith('assignment_poll', expect.objectContaining({ failedAssignments: 1 }));
   } finally { h.redis.disconnect(); }
 });
 

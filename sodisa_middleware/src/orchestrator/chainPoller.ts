@@ -1,4 +1,5 @@
 import { decodeFrame, parseMessage } from '../protocol';
+import { describeError } from '../common';
 import type { RouteState } from '../persistence';
 import { transition } from './transition';
 import { StepRunner } from './stepRunner';
@@ -67,8 +68,9 @@ export class ChainPoller {
           if (batch < 4) await new Promise<void>((resolve) => setTimeout(resolve, 100));
         }
         });
-      } catch {
-        this.deps.logger.error('chain_poll_failed', { timestamp: new Date(this.now()).toISOString(), deviceId: state.deviceId, routeId: state.assignmentId });
+      } catch (error) {
+        this.deps.logger.error('chain_poll_failed', { timestamp: new Date(this.now()).toISOString(),
+          deviceId: state.deviceId, routeId: state.assignmentId, ...describeError(error) });
       }
     }
     this.deps.logger.debug('chain_poll', { timestamp: new Date(this.now()).toISOString(), source: 'chains', devices: queried,

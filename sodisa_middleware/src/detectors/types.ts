@@ -2,7 +2,7 @@ import type { ChainCursor } from '../persistence/types';
 
 export interface AssignmentRow {
   assignmentId: number; companyId: number; unitId: number; catalogRouteId: number;
-  estado: number; enUso: boolean; horaInicial: Date; horaFinal: Date; modificadoEn: string | null;
+  estado: number; enUso: boolean; horaInicial: Date; horaFinal: Date | null; modificadoEn: string | null;
 }
 export interface AssignmentDetector {
   listVigentes(companyId: number): Promise<AssignmentRow[]>;

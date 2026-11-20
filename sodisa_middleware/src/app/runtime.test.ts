@@ -30,11 +30,16 @@ test('configuración inválida sale 78 y no construye la aplicación', async () 
 
 test('fallo de arranque sale 1 y pide apagado sin imprimir la causa cruda', async () => {
   const h = fixture();
-  jest.mocked(h.app.start).mockRejectedValueOnce(new Error('DB_SECRET_MARKER'));
+  jest.mocked(h.app.start).mockRejectedValueOnce(Object.assign(new Error('<valor-db>'), { code: '28P01' }));
   await runProcess(() => ({} as AppConfig), h.port, h.logger, h.factories);
   expect(h.port.exitCode).toBe(1);
   expect(h.app.shutdown).toHaveBeenCalledWith('startup_failed');
-  expect(JSON.stringify(jest.mocked(h.logger.error).mock.calls)).not.toContain('DB_SECRET_MARKER');
+  expect(h.logger.error).toHaveBeenCalledWith('startup_failed', expect.objectContaining({
+    errorName: 'Error', errorCode: '28P01',
+  }));
+  const startup = jest.mocked(h.logger.error).mock.calls.find(([event]) => event === 'startup_failed')?.[1];
+  expect(startup).not.toHaveProperty('errorMessage');
+  expect(JSON.stringify(jest.mocked(h.logger.error).mock.calls)).not.toContain('<valor-db>');
 });
 
 test('SIGTERM durante el arranque espera y apaga una sola vez; segunda señal fuerza salida', async () => {

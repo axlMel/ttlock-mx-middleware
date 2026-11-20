@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { describeError } from '../common';
 import { mkdir, open, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type Redis from 'ioredis';
@@ -124,7 +125,9 @@ export function buildApp(config: AppConfig, logger: Logger, factories: AppFactor
           heartbeat = setInterval(() => { void recordHeartbeat(); }, 60_000);
           log('startup_complete');
         } catch (error) {
-          logger.error('startup_failed', { timestamp: now(), stage, reason: `Falló el arranque en ${stage}.` });
+          const { errorName, errorCode } = describeError(error);
+          logger.error('startup_failed', { timestamp: now(), stage, reason: `Falló el arranque en ${stage}.`,
+            errorName, ...(errorCode === undefined ? {} : { errorCode }) });
           if (scheduler && !started) {
             try { await scheduler.close(); }
             catch { logger.error('scheduler_close_failed', { timestamp: now(), reason: 'No se pudo cerrar el Scheduler.' }); }

@@ -19,7 +19,7 @@ interface SqlClient { query(text: string, values: unknown[]): Promise<{ rows: Re
 interface AssignmentRow {
   assignmentId: number; companyId: number; unitId: number; catalogRouteId: number;
   estado: number; enUso: boolean;
-  horaInicial: Date; horaFinal: Date;      // interpretadas en assignmentTz
+  horaInicial: Date; horaFinal: Date | null; // hora final real, nula mientras no termina; interpretadas en assignmentTz
   modificadoEn: string | null;             // texto tal cual lo entrega la BD
 }
 interface AssignmentDetector {
@@ -94,6 +94,7 @@ Las columnas `dt_hora_inicial`, `dt_hora_final`, `dt_modificacion` y `dt_trama` 
 **Asignaciones**
 - `listVigentes` solo devuelve filas con `int_estado` 3 o 4 y `bol_enuso` (ver sección “Estados”). Las filas en estado 1 no se devuelven. `getById` devuelve la fila sea cual sea su estado; `null` si no existe.
 - `int_id`, `int_idempresa`, `int_idunidad`, `int_idruta` y `int_estado` se convierten con `Number()` y se validan como enteros finitos; una fila inválida lanza un error con su `int_id`.
+- `dt_hora_final` es la hora real de término y solo informativa: se conserva como `null` si la BD devuelve `NULL` (sin convertirla a 1970); `AT TIME ZONE` sobre `NULL` también devuelve `NULL`.
 
 ## Estados
 | Valor | Nombre | Significado | Tratamiento |
@@ -126,6 +127,7 @@ Una asignación puede aparecer directamente en estado 4.
 - Consultas parametrizadas, sin JOINs ni `SELECT *`. Ninguna escritura en la BD.
 
 ## Criterios de aceptación
+- [ ] Una fila con `dt_hora_final` nula devuelve `horaFinal: null` sin lanzar; con valor devuelve el `Date` correcto.
 - [ ] `listVigentes` usa el filtro `int_estado IN (3, 4) AND bol_enuso` (prueba sobre el texto de A1) y `isActiveAssignment` da verdadero solo para 3 y 4 con `enUso`, y falso para −1, 0, 1, 2, 5, 6, 7 y cualquier fila con `enUso = false`.
 - [ ] `VIGENT_STATES` coincide con la lista literal de A1 (prueba que extrae `IN (…)` del SQL y lo compara).
 - [ ] `listVigentes` devuelve filas tipadas y pasa `assignmentTz` como `$2`; el `Date` resultante corresponde a esa zona (prueba con una zona distinta de UTC).

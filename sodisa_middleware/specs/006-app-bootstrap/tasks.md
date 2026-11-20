@@ -13,3 +13,4 @@
 - [x] **T11. Cierre.** `npm run lint`, `npm run build` y `npm test` completos en verde. Fila de 006 en `AGENTS.md` actualizada (solo esa). Commit.
 - [x] **T12. Enmienda de REDIS_URL.** Leer `redis-url` desde `CREDENTIALS_DIRECTORY` con respaldo en `REDIS_URL` para desarrollo; validar el esquema, ocultar la URL y su contraseña en configuración, logs y errores, quitarla de `.env.example` y probar precedencia, ausencia y redacción. Commit separado antes de 008.
 - [x] **T13. Enmienda de estados.** Quitar `START_MARGIN_MINUTES` de `AppConfig`, validación, `startup_config`, pruebas, cableado de `src/app/` y ejemplo de despliegue; si existe en el entorno, ignorarla sin error.
+- [x] **T14. Causa segura de arranque.** Usar `describeError` de `src/common/` en ambos `startup_failed`, conservar `stage` en `buildApp`, omitir `errorMessage` y probar `errorCode: '28P01'` sin mensaje secreto.
