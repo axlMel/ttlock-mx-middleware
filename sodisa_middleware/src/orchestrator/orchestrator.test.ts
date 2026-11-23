@@ -10,6 +10,7 @@ import { KeyedMutex } from './keyedMutex';
 import { createOrchestrator } from './orchestrator';
 import { FakeScheduler } from './scheduler';
 import { StepRunner } from './stepRunner';
+import { createChainQueryLimiter } from './chainQueryLimiter';
 import type { OrchestratorDeps, OrchestratorOptions } from './types';
 
 const ack = (serial: string): string => `+ACK:GTGEO,270D04,863457050476769,,0,${serial},20260921220939,03C8`;
@@ -42,7 +43,8 @@ function setup(dryRun = false) {
   const row: AssignmentRow = { assignmentId: 42, companyId: 364, unitId: 81, catalogRouteId: 17,
     estado: 3, enUso: true, horaInicial: new Date(time - 1000), horaFinal: new Date(time + 3600000), modificadoEn: null };
   const opts: OrchestratorOptions = { enabledCompanies: new Map([[364, 2]]),
-    pollIntervalMsRoutes: 10000, pollIntervalMsAck: 3000, ackRetryBackoffMs: 60000,
+    pollIntervalMsRoutes: 10000, chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: 3,
+    ackRetryBackoffMs: 150000,
     ackMaxRetries: 3, ackResendEnabled: true, dryRun, now: () => time };
   const deps: OrchestratorDeps = {
     detectors: {
@@ -58,7 +60,7 @@ function setup(dryRun = false) {
     catalog: { devices: { resolveForRouteStart: async () => ({ unitId: 81, companyId: 364, deviceId: 9001, modelId: 25, model: 'GV300W' }) },
       plans: { getPlan: async () => { if (planFails) throw new Error('plan unavailable'); return plan; } } },
     gateway: { send: async (request) => { sent.push(request); return gatewayResult; } },
-    routeStates, cursors, scheduler,
+    routeStates, cursors, scheduler, chainQueryLimiter: createChainQueryLimiter(3, () => time),
     logger: { debug: () => undefined, info: () => undefined, warn: (event) => { warnings.push(event); }, error: () => undefined },
   };
   const mutex = new KeyedMutex();
@@ -76,7 +78,14 @@ function setup(dryRun = false) {
   scheduler.onTask((task) => mutex.run(task.assignmentId, () => runner.onTask(task)));
   const assignments = new AssignmentCycle(deps, opts, unitIndex, runner, mutex);
   const chains = new ChainPoller(deps, opts, unitIndex, runner, mutex);
+  let lastChainRun: number | null = null;
   return { redis, routeStates, cursors, scheduler, sent, warnings, row, deps, opts, runner, assignments, chains,
+    runAssignments: async () => { await assignments.run(); await assignments.waitPending(); },
+    pollChains: async () => {
+      if (lastChainRun !== null) time = Math.max(time, lastChainRun + opts.chainPollIntervalMs);
+      await chains.run();
+      lastChainRun = time;
+    },
     setPlan: (value: RoutePlan) => { plan = value; }, setPlanFails: (value: boolean) => { planFails = value; },
     setGatewayResult: (value: GatewayResult) => { gatewayResult = value; },
     setBatchLimit: (value: number) => { batchLimit = value; },
@@ -89,19 +98,19 @@ function setup(dryRun = false) {
 test('ruta de dos puntos llega a COMPLETED con reset y seriales sucesivos', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
-    h.frame(ack('0000')); await h.chains.run();
-    h.frame(enter); await h.chains.run();
-    h.frame(exit); await h.chains.run();
+    h.frame(ack('0000')); await h.pollChains();
+    h.frame(enter); await h.pollChains();
+    h.frame(exit); await h.pollChains();
     expect(h.sent[1].command).toContain(',0001$');
-    h.frame(ack('0001')); await h.chains.run();
-    h.frame(exit); await h.chains.run();
+    h.frame(ack('0001')); await h.pollChains();
+    h.frame(exit); await h.pollChains();
     expect(h.sent[2].command).toContain(',0,0.000000,0.000000,50,');
-    h.frame(ack('0002')); await h.chains.run();
+    h.frame(ack('0002')); await h.pollChains();
     expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
     expect(h.sent.map((request) => request.idempotencyKey)).toEqual(['42-0-1', '42-1-1', '42-2-1']);
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
     expect(h.sent).toHaveLength(3);
   } finally { h.redis.disconnect(); }
@@ -110,14 +119,14 @@ test('ruta de dos puntos llega a COMPLETED con reset y seriales sucesivos', asyn
 test('tras reiniciar se retransmite el comando aceptado aunque cambie el plan', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     const original = h.sent[0].command;
     h.setPlan({ routeType: 0, points: [point(1, -90), point(2, -91)] });
     const resumed = new StepRunner(h.deps, h.opts, async () => 'COMANDO_DEL_PLAN_NUEVO');
     h.scheduler.onTask((task) => resumed.onTask(task));
     await resumed.resume((await h.routeStates.get(42))!);
     expect(h.scheduler.count()).toBe(1);
-    await h.advance(60000);
+    await h.advance(150000);
     expect(h.sent).toHaveLength(2);
     expect(h.sent[1].command).toBe(original);
     expect(h.sent[1].idempotencyKey).toBe('42-0-2');
@@ -128,9 +137,9 @@ test('tras reiniciar se retransmite el comando aceptado aunque cambie el plan', 
 test('estado antiguo sin comando reconstruye y alerta al retransmitir', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     await h.routeStates.set({ ...(await h.routeStates.get(42))!, lastAcceptedCommand: null });
-    await h.advance(60000);
+    await h.advance(150000);
     expect(h.sent).toHaveLength(2);
     expect(h.warnings).toContain('accepted_command_missing_rebuilt');
   } finally { h.redis.disconnect(); }
@@ -139,7 +148,7 @@ test('estado antiguo sin comando reconstruye y alerta al retransmitir', async ()
 test('modo sombra no programa ni retransmite, incluso tras reiniciar', async () => {
   const h = setup(true);
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.ackDeadline).toBeNull();
     expect(h.scheduler.count()).toBe(0);
     await new StepRunner(h.deps, h.opts, async () => 'unused').resume((await h.routeStates.get(42))!);
@@ -153,11 +162,11 @@ test('UNCERTAIN repite la misma clave y comando; ACK cancela el reintento', asyn
   const h = setup();
   try {
     h.setGatewayResult({ kind: 'UNCERTAIN', cause: 'network' });
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.fsmState).toBe('CONFIGURING');
     await h.advance(1000);
     expect(h.sent[1]).toEqual(h.sent[0]);
-    h.frame(ack('0000')); await h.chains.run();
+    h.frame(ack('0000')); await h.pollChains();
     await h.advance(60000);
     expect(h.sent).toHaveLength(2);
   } finally { h.redis.disconnect(); }
@@ -166,14 +175,14 @@ test('UNCERTAIN repite la misma clave y comando; ACK cancela el reintento', asyn
 test('si getPlan falla al salir, el cursor conserva la trama y la aplica luego', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
-    h.frame(ack('0000')); await h.chains.run();
+    await h.runAssignments();
+    h.frame(ack('0000')); await h.pollChains();
     const before = await h.cursors.get(9001);
     h.frame(exit);
-    h.setPlanFails(true); await h.chains.run();
+    h.setPlanFails(true); await h.pollChains();
     expect(await h.cursors.get(9001)).toEqual(before);
     expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
-    h.setPlanFails(false); await h.chains.run();
+    h.setPlanFails(false); await h.pollChains();
     expect((await h.routeStates.get(42))?.currentPointId).toBe(2);
     expect(h.sent).toHaveLength(2);
   } finally { h.redis.disconnect(); }
@@ -182,11 +191,11 @@ test('si getPlan falla al salir, el cursor conserva la trama y la aplica luego',
 test('cierre no vigente transmite reset y elimina tras su ACK', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     h.row.enUso = false;
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.closing?.reason).toBe('ASSIGNMENT_ENDED');
-    h.frame(ack('0001')); await h.chains.run();
+    h.frame(ack('0001')); await h.pollChains();
     expect(await h.routeStates.get(42)).toBeNull();
     expect(await h.cursors.get(9001)).toBeNull();
   } finally { h.redis.disconnect(); }
@@ -195,11 +204,11 @@ test('cierre no vigente transmite reset y elimina tras su ACK', async () => {
 test('el reset de cierre se retransmite aunque la asignación ya no sea vigente', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     h.row.enUso = false;
-    await h.assignments.run();
+    await h.runAssignments();
     const reset = h.sent[1].command;
-    await h.advance(60000);
+    await h.advance(150000);
     expect(h.sent).toHaveLength(3);
     expect(h.sent[2].command).toBe(reset);
     expect(h.sent[2].idempotencyKey).toBe('42-1-2');
@@ -210,12 +219,12 @@ test('ackResendEnabled=false conserva el paso y reprograma otra ventana', async 
   const h = setup();
   try {
     h.opts.ackResendEnabled = false;
-    await h.assignments.run();
-    await h.advance(60000);
+    await h.runAssignments();
+    await h.advance(150000);
     expect(h.sent).toHaveLength(1);
     expect(h.warnings).toContain('ack_window_expired');
     expect(h.scheduler.count()).toBe(1);
-    await h.advance(60000);
+    await h.advance(150000);
     expect(h.warnings.filter((event) => event === 'ack_window_expired')).toHaveLength(2);
   } finally { h.redis.disconnect(); }
 });
@@ -224,7 +233,7 @@ test('DEFINITIVE_ERROR reintenta a cinco minutos con la misma petición', async 
   const h = setup();
   try {
     h.setGatewayResult({ kind: 'DEFINITIVE_ERROR', httpStatus: 422, reason: 'invalid' });
-    await h.assignments.run();
+    await h.runAssignments();
     expect(h.warnings).toContain('gateway_definitive_error');
     await h.advance(299999);
     expect(h.sent).toHaveLength(1);
@@ -237,8 +246,8 @@ test('ruta desordenada emite una sola alerta y no crea estado', async () => {
   const h = setup();
   try {
     h.setPlan({ routeType: 1, points: [point(1, -99)] });
-    await h.assignments.run();
-    await h.assignments.run();
+    await h.runAssignments();
+    await h.runAssignments();
     expect(await h.routeStates.list()).toEqual([]);
     expect(h.warnings.filter((event) => event === 'ROUTE_TYPE_UNORDERED_SKIPPED')).toHaveLength(1);
   } finally { h.redis.disconnect(); }
@@ -248,7 +257,7 @@ test('horaInicial futura no impide iniciar un estado 3', async () => {
   const h = setup();
   try {
     h.row.horaInicial = new Date('2026-11-17T14:00:00Z');
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
   } finally { h.redis.disconnect(); }
 });
@@ -257,7 +266,7 @@ test('empresa deshabilitada impide iniciar', async () => {
   const h = setup();
   try {
     h.opts.enabledCompanies.clear();
-    await h.assignments.run();
+    await h.runAssignments();
     expect(await h.routeStates.list()).toEqual([]);
   } finally { h.redis.disconnect(); }
 });
@@ -267,7 +276,7 @@ test.each([3, 4])('estado %s inicia con hora final nula', async (estado) => {
   try {
     h.row.estado = estado;
     h.row.horaFinal = null;
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
   } finally { h.redis.disconnect(); }
 });
@@ -277,7 +286,7 @@ test.each([null, new Date('2026-11-17T11:00:00Z'), new Date('2026-11-17T14:00:00
   const h = setup();
   try {
     h.row.horaFinal = horaFinal;
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
   } finally { h.redis.disconnect(); }
   });
@@ -287,6 +296,7 @@ test('un error inesperado en la primera asignación deja iniciar a la segunda', 
   try {
     const other: AssignmentRow = { ...h.row, assignmentId: 43, unitId: 82 };
     h.deps.detectors.assignments.listVigentes = async () => [h.row, other];
+    h.deps.detectors.assignments.getById = async (id) => id === 43 ? other : h.row;
     h.deps.catalog.devices.resolveForRouteStart = async (unitId, companyId) =>
       ({ unitId, companyId, deviceId: 9000 + unitId, modelId: 25, model: 'GV300W' });
     const get = h.routeStates.get.bind(h.routeStates);
@@ -296,7 +306,7 @@ test('un error inesperado en la primera asignación deja iniciar a la segunda', 
     });
     h.deps.logger.error = jest.fn();
     h.deps.logger.debug = jest.fn();
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.list()).map((state) => state.assignmentId)).toEqual([43]);
     expect(h.sent).toHaveLength(1);
     expect(h.deps.logger.error).toHaveBeenCalledWith('assignment_failed', expect.objectContaining({
@@ -319,7 +329,7 @@ test('poll_failed conserva causa y código sin credenciales', async () => {
       if (calls === 1) return list();
       throw Object.assign(new Error('postgres://u:<valor>@host/db'), { code: 'ECONNREFUSED' });
     });
-    const orchestrator = createOrchestrator(h.deps, { ...h.opts, pollIntervalMsRoutes: 60000, pollIntervalMsAck: 60000 });
+    const orchestrator = createOrchestrator(h.deps, { ...h.opts, pollIntervalMsRoutes: 60000 });
     await orchestrator.start();
     expect(h.deps.logger.error).toHaveBeenCalledWith('poll_failed', expect.objectContaining({
       errorName: 'Error', errorCode: 'ECONNREFUSED', errorMessage: 'postgres://***@host/db',
@@ -337,7 +347,7 @@ test('el error de consulta de empresa conserva causa y no cuenta una asignación
     };
     h.deps.logger.error = jest.fn();
     h.deps.logger.debug = jest.fn();
-    await h.assignments.run();
+    await h.runAssignments();
     expect(h.deps.logger.error).toHaveBeenCalledWith('assignment_poll_failed', expect.objectContaining({
       companyId: 364, errorCode: '28P01', errorMessage: 'postgres://***@host/db',
     }));
@@ -348,12 +358,12 @@ test('el error de consulta de empresa conserva causa y no cuenta una asignación
 test('chain_poll_failed registra la causa redactada del equipo', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     h.deps.detectors.chains.readNew = async () => {
       throw Object.assign(new Error('redis://:<valor>@host/0'), { code: 'ECONNREFUSED' });
     };
     h.deps.logger.error = jest.fn();
-    await h.chains.run();
+    await h.pollChains();
     expect(h.deps.logger.error).toHaveBeenCalledWith('chain_poll_failed', expect.objectContaining({
       routeId: 42, deviceId: 9001, errorCode: 'ECONNREFUSED', errorMessage: 'redis://***@host/0',
     }));
@@ -363,14 +373,14 @@ test('chain_poll_failed registra la causa redactada del equipo', async () => {
 test('route_resume_failed registra causa y el fallo pertenece a esa asignación', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     await h.routeStates.set({ ...(await h.routeStates.get(42))!, fsmState: 'PENDING', transmissionSeq: 0,
       pendingRequest: null });
     jest.spyOn(h.routeStates, 'set').mockRejectedValueOnce(Object.assign(new Error('postgres://u:<valor>@host/db'),
       { code: '28P01' }));
     h.deps.logger.error = jest.fn();
     h.deps.logger.debug = jest.fn();
-    await h.assignments.run();
+    await h.runAssignments();
     expect(h.deps.logger.error).toHaveBeenCalledWith('route_resume_failed', expect.objectContaining({
       routeId: 42, errorCode: '28P01', errorMessage: 'postgres://***@host/db',
     }));
@@ -385,8 +395,8 @@ test('estado 4 inicia directamente y el estado 1 espera sin consultar tramas ni 
     const initCursor = jest.spyOn(h.deps.detectors.chains, 'initCursor');
     const readNew = jest.spyOn(h.deps.detectors.chains, 'readNew');
     const resolve = jest.spyOn(h.deps.catalog.devices, 'resolveForRouteStart');
-    await h.assignments.run();
-    await h.chains.run();
+    await h.runAssignments();
+    await h.pollChains();
     expect(await h.routeStates.list()).toEqual([]);
     expect(h.sent).toHaveLength(0);
     expect(initCursor).not.toHaveBeenCalled();
@@ -394,10 +404,10 @@ test('estado 4 inicia directamente y el estado 1 espera sin consultar tramas ni 
     expect(resolve).not.toHaveBeenCalled();
     h.row.estado = 4;
     h.row.enUso = false;
-    await h.assignments.run();
+    await h.runAssignments();
     expect(await h.routeStates.list()).toEqual([]);
     h.row.enUso = true;
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
     expect(h.sent).toHaveLength(1);
   } finally { h.redis.disconnect(); }
@@ -407,7 +417,7 @@ test.each([-1, 0, 2, 5, 6, 7])('estado %s nunca inicia una ruta', async (estado)
   const h = setup();
   try {
     h.row.estado = estado;
-    await h.assignments.run();
+    await h.runAssignments();
     expect(await h.routeStates.list()).toEqual([]);
     expect(h.sent).toHaveLength(0);
   } finally { h.redis.disconnect(); }
@@ -416,15 +426,15 @@ test.each([-1, 0, 2, 5, 6, 7])('estado %s nunca inicia una ruta', async (estado)
 test('el paso 3 a 4 y de regreso conserva estado y temporizador', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     const original = await h.routeStates.get(42);
     expect(h.scheduler.count()).toBe(1);
     h.row.estado = 4;
-    await h.assignments.run();
+    await h.runAssignments();
     expect(await h.routeStates.get(42)).toEqual(original);
     expect(h.scheduler.count()).toBe(1);
     h.row.estado = 3;
-    await h.assignments.run();
+    await h.runAssignments();
     expect(await h.routeStates.get(42)).toEqual(original);
     expect(h.scheduler.count()).toBe(1);
     expect(h.sent).toHaveLength(1);
@@ -434,9 +444,9 @@ test('el paso 3 a 4 y de regreso conserva estado y temporizador', async () => {
 test.each([1, 2, 5, 6, 7])('estado final %s cierra con reset tras una transmisión', async (estado) => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     h.row.estado = estado;
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.get(42))?.closing).toEqual({ reason: 'ASSIGNMENT_ENDED', finalEstado: estado });
     expect(h.sent).toHaveLength(2);
     expect(h.sent[1].command).toContain(',0,0.000000,0.000000,50,');
@@ -446,9 +456,9 @@ test.each([1, 2, 5, 6, 7])('estado final %s cierra con reset tras una transmisi�
 test('la retransmisión continúa al pasar de estado 3 a 4', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     h.row.estado = 4;
-    await h.advance(60000);
+    await h.advance(150000);
     expect(h.sent).toHaveLength(2);
     expect(h.sent[1].idempotencyKey).toBe('42-0-2');
   } finally { h.redis.disconnect(); }
@@ -457,10 +467,10 @@ test('la retransmisión continúa al pasar de estado 3 a 4', async () => {
 test('el siguiente paso usa el primer punto no cumplido del plan actualizado', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
-    h.frame(ack('0000')); await h.chains.run();
+    await h.runAssignments();
+    h.frame(ack('0000')); await h.pollChains();
     h.setPlan({ routeType: 0, points: [point(1, -99), point(3, -98), point(2, -97)] });
-    h.frame(exit); await h.chains.run();
+    h.frame(exit); await h.pollChains();
     expect((await h.routeStates.get(42))?.currentPointId).toBe(3);
     expect(h.sent[1].command).toContain('-98.000000');
   } finally { h.redis.disconnect(); }
@@ -469,10 +479,10 @@ test('el siguiente paso usa el primer punto no cumplido del plan actualizado', a
 test('start recupera estado y stop cierra el scheduler', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     const scheduler = new FakeScheduler();
     const deps = { ...h.deps, scheduler };
-    const orchestrator = createOrchestrator(deps, { ...h.opts, pollIntervalMsRoutes: 60000, pollIntervalMsAck: 60000 });
+    const orchestrator = createOrchestrator(deps, { ...h.opts, pollIntervalMsRoutes: 60000 });
     await orchestrator.start();
     expect(scheduler.count()).toBe(1);
     expect(h.sent).toHaveLength(1);
@@ -481,15 +491,15 @@ test('start recupera estado y stop cierra el scheduler', async () => {
   } finally { h.redis.disconnect(); }
 });
 
-test('hasMore procesa hasta cinco lotes por recorrido y conserva el cursor', async () => {
+test('hasMore reencola lotes sin lectura inmediata y conserva el cursor', async () => {
   const h = setup();
   try {
-    await h.assignments.run();
+    await h.runAssignments();
     h.setBatchLimit(1);
     for (let index = 0; index < 6; index += 1) h.frame('trama-desconocida');
-    await h.chains.run();
-    expect((await h.cursors.get(9001))?.recentIds).toEqual([5]);
-    await h.chains.run();
+    await h.pollChains();
+    expect((await h.cursors.get(9001))?.recentIds).toEqual([1]);
+    for (let index = 0; index < 5; index += 1) await h.pollChains();
     expect((await h.cursors.get(9001))?.recentIds).toEqual([6]);
   } finally { h.redis.disconnect(); }
 });
@@ -499,17 +509,94 @@ test('dos asignaciones de la misma unidad eligen la hora inicial más temprana',
   try {
     const other = { ...h.row, assignmentId: 43, horaInicial: new Date(h.row.horaInicial.getTime() + 1000) };
     h.deps.detectors.assignments.listVigentes = async () => [other, h.row];
-    await h.assignments.run();
+    await h.runAssignments();
     expect((await h.routeStates.list()).map((state) => state.assignmentId)).toEqual([42]);
     expect(h.sent).toHaveLength(1);
   } finally { h.redis.disconnect(); }
+});
+
+test('el sondeo de asignaciones no espera un cursor pendiente', async () => {
+  const h = setup();
+  try {
+    let release: ((value: { partition: string; dtTrama: null; recentIds: number[] }) => void) | undefined;
+    h.deps.detectors.chains.initCursor = async () => new Promise((resolve) => { release = resolve; });
+    const list = jest.spyOn(h.deps.detectors.assignments, 'listVigentes');
+    await h.assignments.run();
+    expect(await h.routeStates.list()).toEqual([]);
+    await h.assignments.run();
+    expect(list).toHaveBeenCalledTimes(2);
+    release?.({ partition: '202647', dtTrama: null, recentIds: [] });
+    await h.assignments.waitPending();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ACK');
+  } finally { h.redis.disconnect(); }
+});
+
+test('no transmite si la asignación pierde vigencia mientras espera el cursor', async () => {
+  const h = setup();
+  try {
+    let release!: (value: { partition: string; dtTrama: null; recentIds: number[] }) => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const cursor = new Promise<{ partition: string; dtTrama: null; recentIds: number[] }>((resolve) => { release = resolve; });
+    h.deps.detectors.chains.initCursor = async () => { entered(); return cursor; };
+    await h.assignments.run();
+    await waiting;
+    h.row.enUso = false;
+    release({ partition: '202647', dtTrama: null, recentIds: [] });
+    await h.assignments.waitPending();
+    expect(await h.routeStates.list()).toEqual([]);
+    expect(h.sent).toHaveLength(0);
+  } finally { h.redis.disconnect(); }
+});
+
+test('un fallo diferido de cursor se cuenta en el siguiente sondeo', async () => {
+  const h = setup();
+  try {
+    h.deps.detectors.chains.initCursor = async () => { throw new Error('consulta fallida'); };
+    h.deps.logger.debug = jest.fn();
+    h.deps.logger.error = jest.fn();
+    await h.assignments.run();
+    await h.assignments.waitPending();
+    await h.assignments.run();
+    const polls = jest.mocked(h.deps.logger.debug).mock.calls.filter(([event]) => event === 'assignment_poll');
+    expect(polls[0][1]).toEqual(expect.objectContaining({ failedAssignments: 0 }));
+    expect(polls[1][1]).toEqual(expect.objectContaining({ failedAssignments: 1 }));
+    await h.assignments.waitPending();
+  } finally { h.redis.disconnect(); }
+});
+
+test('treinta rutas inicializan sus cursores sin superar el tope SQL', async () => {
+  jest.useFakeTimers({ now: 0 });
+  const h = setup();
+  try {
+    const rows = Array.from({ length: 30 }, (_, i) => ({ ...h.row, assignmentId: 100 + i, unitId: 200 + i }));
+    h.deps.detectors.assignments.listVigentes = async () => rows;
+    h.deps.detectors.assignments.getById = async (id) => rows.find((row) => row.assignmentId === id) ?? null;
+    h.deps.catalog.devices.resolveForRouteStart = async (unitId, companyId) =>
+      ({ unitId, companyId, deviceId: 9000 + unitId, modelId: 25, model: 'GV300W' });
+    const limiter = createChainQueryLimiter(3);
+    h.deps.chainQueryLimiter = limiter;
+    const queries: number[] = [];
+    h.deps.detectors.chains.initCursor = async () => {
+      for (let i = 0; i < 2; i += 1) await limiter.run(async () => { queries.push(Date.now()); return { rows: [] }; });
+      return { partition: '202647', dtTrama: null, recentIds: [] };
+    };
+    await h.assignments.run();
+    await jest.advanceTimersByTimeAsync(20_000);
+    await h.assignments.waitPending();
+    expect(await h.routeStates.list()).toHaveLength(30);
+    expect(queries).toHaveLength(60);
+    for (const at of queries) expect(queries.filter((other) => other >= at && other < at + 1000).length)
+      .toBeLessThanOrEqual(3);
+    await limiter.close();
+  } finally { h.redis.disconnect(); jest.useRealTimers(); }
 });
 
 test('AuditUnavailableError conserva la petición para reintentar', async () => {
   const h = setup();
   try {
     h.deps.gateway.send = async (request) => { h.sent.push(request); throw new AuditUnavailableError(); };
-    await h.assignments.run();
+    await h.runAssignments();
     expect(h.warnings).toContain('audit_unavailable');
     expect((await h.routeStates.get(42))?.pendingRequest?.idempotencyKey).toBe('42-0-1');
     await h.advance(1000);

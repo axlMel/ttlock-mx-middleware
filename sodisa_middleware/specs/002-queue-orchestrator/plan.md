@@ -14,6 +14,10 @@
 10. **Estados de asignación de 001.** `assignmentCycle` y la verificación de retransmisión usan `isActiveAssignment` del índice público de 001 para filas de `getById`; el reset con `closing = ASSIGNMENT_ENDED` se retransmite aun después de perder vigencia. El inicio solo exige vigencia; `horaFinal` es informativa y `START_MARGIN_MINUTES` no existe. Un cambio entre 3 y 4 conserva el estado y los temporizadores.
 11. **Aislamiento por asignación.** Capturar fallos dentro de cada candidato antes de pasar al siguiente; los fallos por empresa sin `assignmentId` no aumentan `failedAssignments`. Conservar eventos especializados y registrar también `assignment_failed` para una asignación que no pudo procesarse.
 12. **Diagnóstico compartido.** `src/common/errors.ts` expone `describeError` por `src/common/index.ts`, autorizado para 002 y 006. Redactar URLs antes de truncar evita mostrar una contraseña cortada sin el `@` final. No registrar errores crudos.
+13. **Cola de tramas por equipo.** `chainPoller` conserva un `nextPollAt` por equipo, atiende primero el vencido más antiguo y reparte los turnos normales con un intervalo objetivo de `chainPollIntervalMs / devices`, sujeto al tope SQL. `hasMore` reencola el equipo para el siguiente turno permitido por el limitador, dando prioridad a los otros equipos vencidos. Al reiniciar reconstruye la cola desde `RouteState`; no persiste tiempos de polling.
+14. **Límite SQL compartido.** `createChainQueryLimiter` de 002 se exporta por `index.ts`. 006 lo usa para envolver solo las consultas del `SqlClient` a particiones `tbl_cadena."YYYYWW"`, con una única consulta en vuelo. El límite cubre las múltiples consultas de una misma llamada a 001 sin cambiar su contrato; las consultas de catálogo de particiones y asignaciones quedan fuera. El limitador acumula métricas por minuto y aplica retroceso global tras fallos SQL.
+15. **Inicio independiente.** Las inicializaciones de cursor se ejecutan como trabajo pendiente por asignación, con reserva de unidad para evitar duplicados. `assignmentCycle.run()` no espera el turno SQL; el primer sondeo de tramas se inicia sin bloquear el ciclo de asignaciones. Al terminar la espera se vuelve a comprobar la vigencia antes de transmitir. `stop()` cancela esperas pendientes y espera la consulta en vuelo.
+16. **Registro agregado.** El poller emite `chain_poll_summary` cada minuto con las métricas del limitador, rezago y equipos; `chain_poll_saturated` se limita a un aviso por minuto. `effectiveIntervalMs` es el máximo entre el objetivo por equipo y el tiempo requerido por la carga al tope configurado.
 
 ## Estructura
 ```
@@ -38,6 +42,8 @@ Tipos y serial → `transition.ts` con su tabla de pruebas → `FakeScheduler` y
 Enmienda de estados: retirar la opción del margen → usar el predicado de 001 en inicio, cierre y retransmisión → probar estado 1, inicio 3/4, continuidad y cierre.
 
 Enmienda de hora final y errores: eliminar la comparación → aislar selección/inicio por fila y contar fallos → añadir el descriptor común y aplicarlo a todos los registros pedidos → probar continuidad y redacción.
+
+Enmienda de carga: actualizar contratos de 002/006 → limitador SQL compartido y pruebas de ventanas y fallos → cola por equipo y arranques pendientes → métricas por minuto → cableado y configuración → pruebas con reloj simulado → lint, build y tests.
 
 ## Riesgos
 - El traductor de `jobId` tiene prueba unitaria. El adaptador completo de BullMQ queda sin prueba de integración automática porque Redis en memoria no soporta sus scripts; se verifica en el despliegue sombra.

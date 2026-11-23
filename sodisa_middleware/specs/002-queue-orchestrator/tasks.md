@@ -13,3 +13,7 @@
 - [x] **T11. Cierre.** `npm run lint`, `npm run build` y `npm test` completos en verde. Fila de 002 en `AGENTS.md` actualizada (solo esa). Commit.
 - [x] **T12. Enmienda de estados.** Quitar `startMarginMinutes`; usar `isActiveAssignment` de 001 en inicio, cierre y retransmisión; probar espera de 1, inicio en 3/4, continuidad 3 ↔ 4, cierres y retransmisión del reset. La condición previa sobre `horaFinal` se retira en T13.
 - [x] **T13. Hora final y aislamiento.** Quitar `horaFinal` de inicio; `try/catch` por asignación y `failedAssignments`; usar `describeError` de `src/common/` en los registros de 002. Pruebas de inicio con `null`/pasado/futuro, continuidad entre asignaciones y causas redactadas.
+- [x] **T14. Límite SQL.** Crear y exportar `ChainQueryLimiter`: una consulta en vuelo, espaciado y ventana móvil, tasa decimal, retroceso por fallos y métricas; pruebas de 30 `initCursor` simultáneos y consultas múltiples por llamada.
+- [x] **T15. Cola por equipo.** Sustituir el barrido por `nextPollAt`, orden del vencido, reparto uniforme, `hasMore` reencolado y primer turno inmediato. Probar 60 equipos/10 min y 200 saturados sin ráfagas.
+- [x] **T16. Independencia y registros.** Inicios de ruta pendientes sin bloquear asignaciones, vigencia al transmitir, parada ordenada, `chain_poll_saturated` y `chain_poll_summary` por minuto; pruebas de fallos, rezago y ausencia de `chain_poll`.
+- [x] **T17. Cierre de enmienda.** `npm run lint`, `npm run build`, `npm test`, revisión de referencias antiguas y commit. Conservar `AGENTS.md` y `legacy/` intactos.

@@ -2,6 +2,7 @@ import type { AssignmentDetector, ChainReader } from '../detectors';
 import type { DeviceDirectory, RoutePlanRepository } from '../catalog';
 import type { CommandGateway } from '../gateway';
 import type { RouteStateStore, ChainCursorStore, RouteState } from '../persistence';
+import type { ChainQueryLimiter } from './chainQueryLimiter';
 
 export interface Logger {
   debug(event: string, fields?: Record<string, unknown>): void;
@@ -11,7 +12,7 @@ export interface Logger {
 }
 export interface OrchestratorOptions {
   enabledCompanies: Map<number, number>;
-  pollIntervalMsRoutes: number; pollIntervalMsAck: number;
+  pollIntervalMsRoutes: number; chainPollIntervalMs: number; chainMaxQueriesPerSecond: number;
   ackRetryBackoffMs: number; ackMaxRetries: number; ackResendEnabled: boolean; dryRun: boolean;
   now?: () => number;
 }
@@ -29,7 +30,7 @@ export interface OrchestratorDeps {
   catalog: { devices: DeviceDirectory; plans: RoutePlanRepository };
   gateway: CommandGateway;
   routeStates: RouteStateStore; cursors: ChainCursorStore;
-  scheduler: Scheduler; logger: Logger;
+  scheduler: Scheduler; logger: Logger; chainQueryLimiter: ChainQueryLimiter;
 }
 export interface Orchestrator { start(): Promise<void>; stop(): Promise<void> }
 export type TransitionEvent =

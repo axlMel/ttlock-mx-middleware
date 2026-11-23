@@ -4,7 +4,8 @@ export interface AppConfig {
   enabledCompanies: Map<number, number>;
   assignmentTz: string;
   pollIntervalMsRoutes: number;
-  pollIntervalMsAck: number;
+  chainPollIntervalMs: number;
+  chainMaxQueriesPerSecond: number;
   ackRetryBackoffMs: number;
   ackMaxRetries: number;
   ackResendEnabled: boolean;
@@ -46,6 +47,15 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: (p
       return fallback;
     }
     return raw === 'true';
+  };
+  const positiveRate = (name: string, fallback: number): number => {
+    const raw = env[name] ?? String(fallback);
+    const value = Number(raw);
+    if (!raw.trim() || !Number.isFinite(value) || value <= 0) {
+      issues.push(`${name}: debe ser un número positivo y finito.`);
+      return fallback;
+    }
+    return value;
   };
   const url = (name: string, protocols: string[]): string => {
     const raw = env[name]?.trim() ?? '';
@@ -97,8 +107,9 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: (p
   const config: AppConfig = {
     enabledCompanies, assignmentTz,
     pollIntervalMsRoutes: number('POLL_INTERVAL_MS_ROUTES', 10000, 1),
-    pollIntervalMsAck: number('POLL_INTERVAL_MS_ACK', 3000, 1),
-    ackRetryBackoffMs: number('ACK_RETRY_BACKOFF_MS', 60000, 1),
+    chainPollIntervalMs: number('CHAIN_POLL_INTERVAL_MS', 60000, 1),
+    chainMaxQueriesPerSecond: positiveRate('CHAIN_MAX_QUERIES_PER_SECOND', 3),
+    ackRetryBackoffMs: number('ACK_RETRY_BACKOFF_MS', 150000, 1),
     ackMaxRetries: number('ACK_MAX_RETRIES', 3, 1),
     ackResendEnabled: boolean('ACK_RESEND_ENABLED', true),
     catalogRevalidateMs: number('CATALOG_REVALIDATE_MS', 300000, 1),

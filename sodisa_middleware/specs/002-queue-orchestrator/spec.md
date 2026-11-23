@@ -23,7 +23,8 @@ interface Logger { debug|info|warn|error(event: string, fields?: Record<string, 
 interface OrchestratorOptions {
   enabledCompanies: Map<number, number>;   // plataforma -> companyId de la API (ENABLED_COMPANIES)
   pollIntervalMsRoutes: number;            // POLL_INTERVAL_MS_ROUTES
-  pollIntervalMsAck: number;               // POLL_INTERVAL_MS_ACK
+  chainPollIntervalMs: number;             // CHAIN_POLL_INTERVAL_MS
+  chainMaxQueriesPerSecond: number;        // CHAIN_MAX_QUERIES_PER_SECOND
   ackRetryBackoffMs: number;               // ACK_RETRY_BACKOFF_MS
   ackMaxRetries: number;                   // ACK_MAX_RETRIES (por lote)
   ackResendEnabled: boolean;               // ACK_RESEND_ENABLED
@@ -36,9 +37,20 @@ interface OrchestratorDeps {
   gateway: CommandGateway;                                               // 007
   routeStates: RouteStateStore; cursors: ChainCursorStore;               // 004
   scheduler: Scheduler; logger: Logger;
+  chainQueryLimiter: ChainQueryLimiter;    // compartido con el SqlClient de tramas en 006
 }
 interface Orchestrator { start(): Promise<void>; stop(): Promise<void>; }
 function createOrchestrator(deps: OrchestratorDeps, opts: OrchestratorOptions): Orchestrator;
+interface ChainQueryStats {
+  queries: number; rows: number; avgDurationMs: number; maxDurationMs: number; throttledMs: number;
+}
+interface ChainQueryLimiter {
+  run<T extends { rows: unknown[] }>(query: () => Promise<T>): Promise<T>;
+  takeStats(): ChainQueryStats;
+  minimumSpacingMs(): number;
+  close(): Promise<void>;
+}
+function createChainQueryLimiter(maxQueriesPerSecond: number, now?: () => number): ChainQueryLimiter;
 
 // Abstracción de temporizadores por paso (implementada con BullMQ y con un falso para pruebas)
 interface Scheduler {
@@ -133,15 +145,19 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 
 ## Lectura de tramas
 - Solo se consultan equipos con `RouteState` en `CONFIGURING` (con `pendingRequest`), `AWAITING_ACK`, `IN_ZONE` o `AWAITING_EXIT_ALERT`.
-- Un solo poller, **secuencial por equipo**: recorre los equipos en espera uno por uno y espera `pollIntervalMsAck` antes del siguiente recorrido. Si `hasMore`, lee otra vez enseguida (máximo 5 veces por equipo y recorrido, con una pausa corta de 100 ms).
+- Cada equipo en espera tiene `nextPollAt`: el primero es inmediato y, tras una lectura, pasa a `ahora + chainPollIntervalMs`. Se atiende el vencido más antiguo. El poller reparte los turnos durante el intervalo objetivo y usa un solo lector en vuelo.
+- Toda consulta SQL a una partición de `tbl_cadena`, tanto de `initCursor` como de `readNew`, pasa por el mismo `ChainQueryLimiter` conectado al `SqlClient` por 006. Entre consultas hay al menos `1000 / chainMaxQueriesPerSecond` ms y, para tasas ≥ 1, ninguna ventana móvil de 1 s supera `floor(chainMaxQueriesPerSecond)` consultas. Para tasas menores de 1, se hace una consulta cada `1 / tasa` segundos como máximo. Solo hay una consulta en vuelo. Las consultas al catálogo de particiones quedan fuera del tope.
+- Si `hasMore`, el equipo vuelve vencido a la cola y usa el siguiente turno disponible del limitador, sin lecturas inmediatas repetidas ni máximo de cinco lotes; los demás equipos vencidos conservan prioridad por `nextPollAt`. El reparto del intervalo objetivo se aplica cuando no hay lotes pendientes. Si la demanda supera el tope, crece `effectiveIntervalMs` y se emite `chain_poll_saturated` (`warn`) a lo más una vez por minuto, con `devices` y `effectiveIntervalMs`.
+- Tras cada consulta SQL fallida consecutiva, el espaciado mínimo se duplica hasta 10 s; una consulta exitosa lo restaura. Se conserva `chain_poll_failed`. El sondeo de asignaciones no pasa por el limitador ni espera sus turnos: las inicializaciones de cursor pendientes se ejecutan aparte, el primer sondeo de tramas tampoco bloquea el ciclo de asignaciones y se revalida la vigencia antes de transmitir.
 - Cada trama: `decodeFrame` → `parseMessage` (003), en orden de `receivedAt`. `unknown` se ignora. Un `ack` se compara con el serial del paso; un `zoneEvent` solo cuenta si `geofenceId = 0` (zona de las rutas con orden).
 - **El cursor se guarda solo después de aplicar con éxito todas las tramas del lote.** Si aplicar una falla (p. ej. `getPlan` en la fila 7), el cursor no avanza y el lote se reaplica en el siguiente recorrido; como las transiciones dependen del estado, lo ya aplicado se ignora (fila 11) y lo pendiente se completa.
 - Las alertas del lector las conecta el arranque (spec 006).
-- Métricas por recorrido: equipos consultados, filas leídas, duración y rezago (ahora − `receivedAt` de la última trama).
+- No se registra `chain_poll` por consulta. Cada minuto se registra `chain_poll_summary` (`info`) con `devices`, `queries`, `rows`, `avgDurationMs`, `maxDurationMs`, `maxLagMs`, `throttledMs` y `effectiveIntervalMs`. `queries` cuenta intentos SQL a particiones; `rows` cuenta sus filas devueltas. `maxLagMs` es el mayor rezago de las tramas procesadas, o `null` si no hubo tramas.
 
 ## Polling de asignaciones
 - Una consulta `listVigentes` por empresa habilitada cada `pollIntervalMsRoutes`.
 - Cada asignación se procesa en su propio `try/catch`, incluida su selección e inicio o su recuperación/cierre. Si falla, se registra `assignment_failed` (`error`) con `assignmentId`, `companyId` y la causa de `describeError`; el ciclo sigue con las demás. `assignment_poll` incluye `failedAssignments`, cantidad de asignaciones distintas que fallaron; un error de consulta sin asignación identificable no se cuenta ahí.
+- Si falla una inicialización de cursor que quedó pendiente tras terminar el ciclo, se registra `assignment_failed` al ocurrir y se cuenta en `failedAssignments` del siguiente ciclo.
 - Espaciado adaptativo: con novedad (asignación nueva, estado cambiado) vuelve al intervalo base; sin novedad el retraso se duplica hasta 5×. Un error se registra, aplica el mismo espaciado y el ciclo siguiente se programa siempre.
 - Es independiente de los reintentos de ACK y no cancela ni falla nada.
 
@@ -192,7 +208,12 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 - [ ] El reset de cierre por asignación no vigente se retransmite si falta su ACK, aunque `isActiveAssignment` sea falso.
 - [ ] Un equipo que nunca responde no bloquea a otro; dos eventos de la misma asignación no se procesan en paralelo.
 - [ ] Una salida se acepta desde `IN_ZONE` sin entrada previa.
-- [ ] El polling de tramas solo consulta equipos en espera, uno por uno, y se pone al día con `hasMore`.
+- [ ] El polling de tramas solo consulta equipos en espera, sin rebasar el tope por segundo, y se pone al día con `hasMore` sin ráfagas.
+- [ ] Con 60 equipos e intervalo de 60 s, en 10 minutos cada uno se consulta 10 veces (±1); ninguna ventana móvil de 1 s supera el tope.
+- [ ] Con 200 equipos y tope de 3/s, crece el intervalo efectivo y `chain_poll_saturated` se emite a lo más una vez por minuto.
+- [ ] Treinta rutas simultáneas limitan todas las consultas SQL de `initCursor`, incluso cuando cada llamada hace dos; `readNew` con cambio de partición y `hasMore` respeta el mismo tope.
+- [ ] Tras fallos consecutivos el espaciado se duplica hasta 10 s y vuelve al normal tras un éxito; un equipo nuevo tiene turno inmediato y el sondeo de asignaciones avanza mientras la cola está saturada.
+- [ ] `chain_poll_summary` aparece una vez por minuto con todos sus campos y no existe `chain_poll` por consulta.
 - [ ] Con `opts.dryRun = true` (mismo `COMMAND_DRY_RUN` que recibe el gateway desde 006) se llega a `AWAITING_ACK` sin temporizador, retransmisión ni avisos de lote, también tras reiniciar. Con `opts.dryRun = false` se retransmite según la política normal.
 - [ ] La lógica de transición es testeable sin BullMQ, Redis ni red (principio III).
 - [ ] Las pruebas usan fakes de 001, 005 y 007, el `Scheduler` falso con tiempo controlado, los módulos reales de 003 y Redis en memoria; no hay BD local.

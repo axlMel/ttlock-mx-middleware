@@ -20,7 +20,8 @@ Variables (defaults en `docs/architecture.md` §7):
 |---|---|
 | `ENABLED_COMPANIES` | Obligatoria. Pares `plataforma:api` separados por coma (`364:2`). Enteros positivos, sin plataformas repetidas. |
 | `ASSIGNMENT_TZ` (`UTC`) | Zona IANA válida (se comprueba con `Intl.DateTimeFormat`). |
-| `POLL_INTERVAL_MS_ROUTES` (10000), `POLL_INTERVAL_MS_ACK` (3000), `ACK_RETRY_BACKOFF_MS` (60000), `CATALOG_REVALIDATE_MS` (300000), `PARTITION_REFRESH_MS` (600000), `COMMAND_API_TIMEOUT_MS` (10000) | Enteros positivos. |
+| `POLL_INTERVAL_MS_ROUTES` (10000), `CHAIN_POLL_INTERVAL_MS` (60000), `ACK_RETRY_BACKOFF_MS` (150000), `CATALOG_REVALIDATE_MS` (300000), `PARTITION_REFRESH_MS` (600000), `COMMAND_API_TIMEOUT_MS` (10000) | Enteros positivos. |
+| `CHAIN_MAX_QUERIES_PER_SECOND` (3) | Número positivo y finito; admite decimales como `0.5`. |
 | `ACK_MAX_RETRIES` (3), `CHAIN_BATCH_LIMIT` (500) | Enteros ≥ 1. |
 | `CHAIN_OVERLAP_MS` (10000) | Entero ≥ 0. |
 | `ACK_RESEND_ENABLED` (`true`), `COMMAND_DRY_RUN` (`false`) | Solo `true` o `false`. |
@@ -29,6 +30,8 @@ Variables (defaults en `docs/architecture.md` §7):
 | `REDIS_URL` | Obligatoria y secreta. Se lee primero de `${CREDENTIALS_DIRECTORY}/redis-url` y, solo para desarrollo, de `REDIS_URL` en el entorno. URL `redis://` o `rediss://`. |
 
 `START_MARGIN_MINUTES` se retiró: no se lee ni se valida. Si sigue en el entorno, se ignora sin error y no aparece en `startup_config`.
+`POLL_INTERVAL_MS_ACK` también se retiró: no se lee ni se valida y se ignora si sigue en el entorno.
+La constante interna `DEVICE_REPORT_INTERVAL_MS = 60000` representa la frecuencia de reporte del equipo. Si `ackRetryBackoffMs < DEVICE_REPORT_INTERVAL_MS + chainPollIntervalMs + 30000`, el arranque registra `config_warning` (`warn`) con esos tres valores, sin fallar.
 
 ### Secretos
 Tres valores son secretos: la **API key de comandos**, la **URL de la BD** y la **URL de Redis**, que contienen contraseñas.
@@ -64,7 +67,9 @@ Para los fallos de arranque usa `describeError` desde `src/common/index.ts` (con
 - **Redis:** una conexión para estado y caché (004) y otra para BullMQ (con `maxRetriesPerRequest: null`, que BullMQ exige).
 - **Gateway y auditoría (007):** `createAuditLog(AUDIT_LOG_DIR)` y `createCommandGateway(audit, { apiUrl, apiKey, timeoutMs, dryRun })`.
 - **Detectores (001):** `ChainReader` creado con `onAlert` que escribe en el **mismo `Logger`** que recibe el orquestador (`chain_alert`, nivel `warn`).
+- El `SqlClient` usado por `ChainReader` pasa cada consulta SQL a una partición de `tbl_cadena` por el `ChainQueryLimiter` compartido con 002. No limita las consultas de asignaciones ni del catálogo de particiones.
 - **Orquestador (002):** recibe `dryRun` con **el mismo valor** que el gateway (una sola lectura de `COMMAND_DRY_RUN`) y `enabledCompanies` convertido a `Map`.
+- El orquestador recibe `chainPollIntervalMs` y `chainMaxQueriesPerSecond`; `startup_config` registra ambos y deja de registrar `pollIntervalMsAck`.
 - `src/app/` no pasa `startMarginMinutes` al orquestador.
 - Todo se importa solo desde las entradas públicas (`index.ts`) de cada módulo.
 
@@ -93,6 +98,10 @@ Cada 60 s se registra un `heartbeat` con: `dryRun`, número de rutas por estado 
 - [ ] `startup_failed` con código `28P01` registra `errorCode: '28P01'`, conserva `stage` donde corresponde y no registra el mensaje del error.
 - [ ] `loadConfig` convierte y valida cada variable de la tabla; con defaults devuelve los valores de `architecture.md` §7.
 - [ ] `START_MARGIN_MINUTES` se ignora aunque tenga un valor inválido; `AppConfig` y `startup_config` no lo contienen.
+- [ ] Defaults de intervalo de tramas, tope y ventana ACK correctos; `POLL_INTERVAL_MS_ACK` se ignora incluso si es inválido y no aparece en `startup_config`.
+- [ ] `CHAIN_MAX_QUERIES_PER_SECOND` admite decimales positivos y rechaza cero, valores negativos y no finitos.
+- [ ] `config_warning` aparece solo cuando la ventana ACK no alcanza `60000 + chainPollIntervalMs + 30000`, con los tres valores y sin detener el arranque.
+- [ ] El limitador compartido incluye todas las consultas SQL a `tbl_cadena` de `initCursor` y `readNew`, pero el polling de asignaciones permanece independiente.
 - [ ] Con varias variables inválidas, `ConfigError` lista **todas** (variable y problema), en español.
 - [ ] Los secretos se leen de `CREDENTIALS_DIRECTORY` primero y de las variables de entorno como respaldo; sin ninguna fuente, error.
 - [ ] `redactConfig` y todo lo que se registra al arrancar no contienen la API key, la contraseña de la BD, la contraseña de Redis ni la URL completa de Redis (prueba con marcadores reconocibles).

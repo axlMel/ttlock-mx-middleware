@@ -165,6 +165,12 @@ Use los archivos de la versión instalada. El entorno contiene solo valores no
 secretos. El marcador de logrotate permite revisar a diario la retención sin mover
 el JSONL que el servicio esté escribiendo.
 
+El ejemplo consulta las tramas de cada equipo cada 60 s y limita las consultas a
+`tbl_cadena` a 3 por segundo para proteger la BD de producción. La ventana de ACK
+es de 150 s: cubre el reporte de 60 s del equipo, el siguiente turno de consulta
+y 30 s adicionales. Si se reduce esa ventana, el servicio registra `config_warning`
+para señalar el riesgo de retransmitir antes de poder leer el ACK.
+
 ```bash
 sudo install -o root -g root -m 0644 /opt/gtlock-middleware/current/deploy/gtlock-middleware.service /etc/systemd/system/gtlock-middleware.service
 sudo install -o root -g root -m 0644 /opt/gtlock-middleware/current/deploy/gtlock-middleware.env.example /etc/gtlock-middleware/gtlock.env

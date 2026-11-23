@@ -10,7 +10,7 @@ test('convierte defaults, pares y booleanos', () => {
   const config = loadConfig(valid, missingFile);
   expect(config.enabledCompanies).toEqual(new Map([[364, 2]]));
   expect(config).toMatchObject({ assignmentTz: 'UTC', pollIntervalMsRoutes: 10000,
-    pollIntervalMsAck: 3000, ackRetryBackoffMs: 60000, ackMaxRetries: 3,
+    chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: 3, ackRetryBackoffMs: 150000, ackMaxRetries: 3,
     ackResendEnabled: true, catalogRevalidateMs: 300000, chainBatchLimit: 500,
     chainOverlapMs: 10000, partitionRefreshMs: 600000, commandApiTimeoutMs: 10000,
     dryRun: false, auditLogDir: './audit' });
@@ -18,11 +18,23 @@ test('convierte defaults, pares y booleanos', () => {
     .toMatchObject({ dryRun: true, ackResendEnabled: false, chainOverlapMs: 0 });
 });
 
-test.each(['POLL_INTERVAL_MS_ROUTES', 'POLL_INTERVAL_MS_ACK',
+test.each(['POLL_INTERVAL_MS_ROUTES', 'CHAIN_POLL_INTERVAL_MS',
   'ACK_RETRY_BACKOFF_MS', 'ACK_MAX_RETRIES', 'CATALOG_REVALIDATE_MS', 'CHAIN_BATCH_LIMIT',
   'PARTITION_REFRESH_MS', 'COMMAND_API_TIMEOUT_MS'])('%s exige entero positivo', (name) => {
   expect(() => loadConfig({ ...valid, [name]: '0' }, missingFile)).toThrow(name);
   expect(() => loadConfig({ ...valid, [name]: '1.5' }, missingFile)).toThrow(name);
+});
+
+test('acepta tasa decimal positiva e ignora la variable de sondeo anterior', () => {
+  const config = loadConfig({ ...valid, CHAIN_MAX_QUERIES_PER_SECOND: '0.5', POLL_INTERVAL_MS_ACK: 'inválido' }, missingFile);
+  expect(config.chainMaxQueriesPerSecond).toBe(0.5);
+  expect(config).not.toHaveProperty('pollIntervalMsAck');
+  expect(redactConfig(config)).not.toHaveProperty('pollIntervalMsAck');
+});
+
+test.each(['0', '-1', 'Infinity', 'NaN', '', '1e999'])('rechaza tasa inválida %s', (value) => {
+  expect(() => loadConfig({ ...valid, CHAIN_MAX_QUERIES_PER_SECOND: value }, missingFile))
+    .toThrow('CHAIN_MAX_QUERIES_PER_SECOND');
 });
 
 test('START_MARGIN_MINUTES obsoleta se ignora y no entra en la configuración registrada', () => {

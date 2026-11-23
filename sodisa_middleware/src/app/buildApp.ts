@@ -7,9 +7,12 @@ import { PgDeviceDirectory, PgRoutePlanRepository, type SqlClient } from '../cat
 import { ConfigError, redactConfig, type AppConfig } from '../config';
 import { createAssignmentDetector, createChainReader } from '../detectors';
 import { createAuditLog, createCommandGateway } from '../gateway';
-import { createOrchestrator, type Logger, type Orchestrator, type Scheduler } from '../orchestrator';
+import { createChainQueryLimiter, createOrchestrator, type Logger, type Orchestrator, type Scheduler } from '../orchestrator';
 import { RedisCatalogCacheStore, RedisChainCursorStore, RedisRouteStateStore, type RouteStateStore } from '../persistence';
 import type { App, AppFactories, PgPool } from './types';
+import { rateLimitedChainSql } from './chainSql';
+
+const DEVICE_REPORT_INTERVAL_MS = 60_000;
 
 export async function ensureAuditDirectory(dir: string): Promise<void> {
   try {
@@ -82,6 +85,9 @@ export function buildApp(config: AppConfig, logger: Logger, factories: AppFactor
       if (startPromise) return startPromise;
       startPromise = (async () => {
         log('startup_config', { config: redactConfig(config) });
+        if (config.ackRetryBackoffMs < DEVICE_REPORT_INTERVAL_MS + config.chainPollIntervalMs + 30_000)
+          logger.warn('config_warning', { timestamp: now(), deviceReportIntervalMs: DEVICE_REPORT_INTERVAL_MS,
+            chainPollIntervalMs: config.chainPollIntervalMs, ackRetryBackoffMs: config.ackRetryBackoffMs });
         await ensureAuditDirectory(config.auditLogDir);
         let stage = 'PostgreSQL';
         try {
@@ -97,11 +103,12 @@ export function buildApp(config: AppConfig, logger: Logger, factories: AppFactor
           await checkRedisConfig(stateRedis);
           stage = 'construcción de dependencias';
           const sql: SqlClient = { query: async (text, values) => ({ rows: (await pool!.query(text, values)).rows }) };
+          const chainQueryLimiter = createChainQueryLimiter(config.chainMaxQueriesPerSecond, factories.now);
           routeStates = new RedisRouteStateStore(stateRedis);
           const cursors = new RedisChainCursorStore(stateRedis);
           const cache = new RedisCatalogCacheStore(stateRedis);
           const assignments = createAssignmentDetector(sql, { assignmentTz: config.assignmentTz });
-          const chains = createChainReader(sql, { assignmentTz: config.assignmentTz,
+          const chains = createChainReader(rateLimitedChainSql(sql, chainQueryLimiter), { assignmentTz: config.assignmentTz,
             chainBatchLimit: config.chainBatchLimit, chainOverlapMs: config.chainOverlapMs,
             partitionRefreshMs: config.partitionRefreshMs, now: factories.now,
             onAlert: (alert) => logger.warn('chain_alert', { timestamp: now(), ...alert }) });
@@ -113,9 +120,10 @@ export function buildApp(config: AppConfig, logger: Logger, factories: AppFactor
             timeoutMs: config.commandApiTimeoutMs, dryRun: config.dryRun, now: factories.now });
           scheduler = factories.createScheduler(config, queueRedis);
           orchestrator = createOrchestrator({ detectors: { assignments, chains }, catalog: { devices, plans },
-            gateway, routeStates, cursors, scheduler, logger }, { enabledCompanies: config.enabledCompanies,
+            gateway, routeStates, cursors, scheduler, logger, chainQueryLimiter }, { enabledCompanies: config.enabledCompanies,
             pollIntervalMsRoutes: config.pollIntervalMsRoutes,
-            pollIntervalMsAck: config.pollIntervalMsAck, ackRetryBackoffMs: config.ackRetryBackoffMs,
+            chainPollIntervalMs: config.chainPollIntervalMs, chainMaxQueriesPerSecond: config.chainMaxQueriesPerSecond,
+            ackRetryBackoffMs: config.ackRetryBackoffMs,
             ackMaxRetries: config.ackMaxRetries, ackResendEnabled: config.ackResendEnabled,
             dryRun: config.dryRun, now: factories.now });
           if (config.dryRun) logger.warn('shadow_mode_active', { timestamp: now(), reason: 'Modo sombra activo.' });

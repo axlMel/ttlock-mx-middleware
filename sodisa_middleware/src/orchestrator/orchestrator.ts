@@ -53,20 +53,22 @@ export function createOrchestrator(deps: OrchestratorDeps, opts: OrchestratorOpt
         catch (error) { deps.logger.error('route_resume_failed', {
           timestamp: now(), deviceId: state.deviceId, routeId: state.assignmentId, ...describeError(error) }); }
       }
-      await Promise.all([
-        assignments.run().catch((error) => deps.logger.error('poll_failed', {
-          timestamp: now(), source: 'assignments', ...describeError(error) })),
-        chains.run().catch((error) => deps.logger.error('poll_failed', {
-          timestamp: now(), source: 'chains', ...describeError(error) })),
-      ]);
+      await assignments.run().catch((error) => deps.logger.error('poll_failed', {
+        timestamp: now(), source: 'assignments', ...describeError(error) }));
       loop(() => assignments.run(), () => assignments.nextDelay(), 'assignments');
-      loop(() => chains.run(), () => opts.pollIntervalMsAck, 'chains');
+      const initialChains = chains.run().catch((error) => deps.logger.error('poll_failed', {
+        timestamp: now(), source: 'chains', ...describeError(error) }))
+        .finally(() => { active.delete(initialChains); loop(() => chains.run(), () => chains.nextDelay(), 'chains'); });
+      active.add(initialChains);
     },
     async stop(): Promise<void> {
       if (!running) return;
       running = false;
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
+      const pendingStarts = assignments.stop();
+      await deps.chainQueryLimiter.close();
+      await pendingStarts;
       await Promise.all([...active]);
       await deps.scheduler.close();
     },

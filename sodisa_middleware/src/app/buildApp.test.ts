@@ -193,3 +193,45 @@ test('fábricas reales configuran pool de tres conexiones y Redis de cola sin re
   expect(queue.options.maxRetriesPerRequest).toBeNull();
   queue.disconnect();
 });
+
+test('avisa si la ventana ACK es demasiado corta y registra las opciones nuevas', async () => {
+  const h = fixture();
+  h.config.ackRetryBackoffMs = 149_999;
+  const app = buildApp(h.config, h.logger, h.factories);
+  await app.start();
+  expect(h.logger.warn).toHaveBeenCalledWith('config_warning', expect.objectContaining({
+    deviceReportIntervalMs: 60_000, chainPollIntervalMs: 60_000, ackRetryBackoffMs: 149_999,
+  }));
+  expect(h.logger.info).toHaveBeenCalledWith('startup_config', expect.objectContaining({
+    config: expect.objectContaining({ chainPollIntervalMs: 60_000, chainMaxQueriesPerSecond: 3 }),
+  }));
+  await app.shutdown('test');
+  const normal = fixture();
+  const normalApp = buildApp(normal.config, normal.logger, normal.factories);
+  await normalApp.start();
+  expect(normal.logger.warn).not.toHaveBeenCalledWith('config_warning', expect.anything());
+  await normalApp.shutdown('test');
+});
+
+test('el lector usa un limitador SQL para cada consulta a tbl_cadena', async () => {
+  const h = fixture();
+  h.factories.now = () => Date.now();
+  const app = buildApp(h.config, h.logger, h.factories);
+  await app.start();
+  const sql = jest.mocked(createChainReader).mock.calls[0][0];
+  const query = 'SELECT int_id FROM tbl_cadena."202647" WHERE int_iddispositivo = $1';
+  jest.useFakeTimers({ now: 0 });
+  try {
+    const first = sql.query(query, [9001]);
+    const second = sql.query(query, [9002]);
+    await first;
+    expect(h.trace.filter((entry) => entry === `pg:${query}`)).toHaveLength(1);
+    await sql.query('SELECT 1', []);
+    await jest.advanceTimersByTimeAsync(334);
+    await second;
+    expect(h.trace.filter((entry) => entry === `pg:${query}`)).toHaveLength(2);
+  } finally {
+    jest.useRealTimers();
+    await app.shutdown('test');
+  }
+});

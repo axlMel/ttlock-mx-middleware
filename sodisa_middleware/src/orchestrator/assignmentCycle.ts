@@ -9,6 +9,10 @@ import type { OrchestratorDeps, OrchestratorOptions } from './types';
 export class AssignmentCycle {
   private delay: number;
   private readonly unorderedAlerted = new Set<number>();
+  private readonly pendingStarts = new Map<number, Promise<void>>();
+  private readonly pendingUnits = new Set<number>();
+  private readonly deferredFailures = new Set<number>();
+  private stopping = false;
   constructor(private readonly deps: OrchestratorDeps, private readonly opts: OrchestratorOptions,
     private readonly unitIndex: Map<number, number>, private readonly runner: StepRunner, private readonly mutex: KeyedMutex) {
     this.delay = opts.pollIntervalMsRoutes;
@@ -18,15 +22,21 @@ export class AssignmentCycle {
     return { timestamp: new Date(this.now()).toISOString(), routeId: assignmentId, deviceId };
   }
   nextDelay(): number { return this.delay; }
+  async waitPending(): Promise<void> { await Promise.all([...this.pendingStarts.values()]); }
+  async stop(): Promise<void> { this.stopping = true; await this.waitPending(); }
 
   async run(): Promise<void> {
     let changed = false;
     let failed = false;
+    let pollLogged = false;
+    const previousFailures = new Set(this.deferredFailures);
+    this.deferredFailures.clear();
     const failedAssignments = new Set<number>();
     const assignmentFailed = (assignmentId: number, companyId: number, deviceId: number,
       stage: string, error: unknown): void => {
       failed = true;
       failedAssignments.add(assignmentId);
+      if (pollLogged) this.deferredFailures.add(assignmentId);
       this.deps.logger.error('assignment_failed', { ...this.fields(assignmentId, deviceId), assignmentId,
         companyId, stage, ...describeError(error) });
     };
@@ -107,8 +117,11 @@ export class AssignmentCycle {
           if (occupying !== row.assignmentId) this.deps.logger.warn('unit_already_in_route', this.fields(row.assignmentId, 0));
           continue;
         }
+        if (this.pendingUnits.has(row.unitId) || this.pendingStarts.has(row.assignmentId) || this.stopping) continue;
         if (await this.deps.routeStates.get(row.assignmentId)) continue;
-        await this.mutex.run(row.assignmentId, async () => {
+        this.pendingUnits.add(row.unitId);
+        changed = true;
+        const work = this.mutex.run(row.assignmentId, async () => {
         const device = await this.deps.catalog.devices.resolveForRouteStart(row.unitId, row.companyId);
         const plan = await this.deps.catalog.plans.getPlan(row.companyId, row.catalogRouteId, { forceFresh: true });
         if (plan.routeType === 1) {
@@ -117,6 +130,10 @@ export class AssignmentCycle {
           return;
         }
         const cursor = await this.deps.detectors.chains.initCursor(device.deviceId);
+        if (this.stopping) return;
+        const currentRow = await this.deps.detectors.assignments.getById(row.assignmentId);
+        if (!currentRow || !isActiveAssignment(currentRow) || currentRow.unitId !== row.unitId ||
+          this.unitIndex.has(row.unitId)) return;
         await this.deps.cursors.set(device.deviceId, cursor);
         const now = new Date(this.now()).toISOString();
         const state: RouteState = { assignmentId: row.assignmentId, companyId: row.companyId,
@@ -127,16 +144,25 @@ export class AssignmentCycle {
           startedAt: now, updatedAt: now };
         await this.deps.routeStates.set(state);
         this.unitIndex.set(row.unitId, row.assignmentId);
-        changed = true;
         await this.runner.send(state);
+        }).catch((error: unknown) => {
+          if (this.stopping) return;
+          assignmentFailed(row.assignmentId, row.companyId, 0, 'inicio', error);
+          this.deps.logger.error('assignment_start_failed', { ...this.fields(row.assignmentId, 0), ...describeError(error) });
+        }).finally(() => {
+          this.pendingStarts.delete(row.assignmentId);
+          this.pendingUnits.delete(row.unitId);
         });
+        this.pendingStarts.set(row.assignmentId, work);
       } catch (error) {
         assignmentFailed(row.assignmentId, row.companyId, 0, 'inicio', error);
         this.deps.logger.error('assignment_start_failed', { ...this.fields(row.assignmentId, 0), ...describeError(error) });
       }
     }
     this.delay = changed ? this.opts.pollIntervalMsRoutes : Math.min(this.opts.pollIntervalMsRoutes * 5, this.delay * 2);
+    pollLogged = true;
     this.deps.logger.debug('assignment_poll', { timestamp: new Date(this.now()).toISOString(), source: 'assignments',
-      count: assignments.length, failedAssignments: failedAssignments.size, nextDelayMs: this.delay, failed });
+      count: assignments.length, failedAssignments: new Set([...failedAssignments, ...previousFailures]).size,
+      nextDelayMs: this.delay, failed: failed || previousFailures.size > 0 });
   }
 }
