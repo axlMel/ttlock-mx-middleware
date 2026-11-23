@@ -82,8 +82,9 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 | `ENABLED_COMPANIES` | — | Pares `plataforma:api` separados por coma. Pruebas `364:2`; producción `364:1` |
 | `ASSIGNMENT_TZ` | `UTC` | Zona de `dt_hora_inicial` y `dt_hora_final` (confirmada) |
 | `POLL_INTERVAL_MS_ROUTES` | `10000` | Consulta de asignaciones (espaciado adaptativo, hasta 5×) |
-| `POLL_INTERVAL_MS_ACK` | `3000` | Consulta de tramas mientras haya equipos esperando |
-| `ACK_RETRY_BACKOFF_MS` | `60000` | Espera del ACK tras cada transmisión antes de retransmitir |
+| `CHAIN_POLL_INTERVAL_MS` | `60000` | Intervalo de consulta de tramas por equipo en espera; las consultas se reparten en el tiempo |
+| `CHAIN_MAX_QUERIES_PER_SECOND` | `3` | Tope duro de consultas por segundo a `tbl_cadena` |
+| `ACK_RETRY_BACKOFF_MS` | `150000` | Espera del ACK tras cada transmisión antes de retransmitir |
 | `ACK_MAX_RETRIES` | `3` | Retransmisiones por lote antes de un aviso; los lotes continúan |
 | `ACK_RESEND_ENABLED` | `true` | Interruptor de seguridad de la retransmisión |
 | `CATALOG_REVALIDATE_MS` | `300000` | Edad máxima de un dato en caché antes de revalidarlo |
