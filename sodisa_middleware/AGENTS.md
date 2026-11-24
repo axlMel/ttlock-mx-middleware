@@ -59,7 +59,7 @@ No existe `FAILED` ni pausa para operador: los reintentos de ACK son continuos. 
 
 ## Reglas (constitución aplicada)
 - Lee `docs/constitution.md`, `docs/architecture.md` y la spec activa antes de escribir o modificar código.
-- **Datos externos:** solo lectura. Sin JOINs ni `SELECT *`. Solo llaves primarias e índices existentes. Consultas parametrizadas. El nombre de la partición de `tbl_cadena` se acepta solo si viene del catálogo y cumple `^[0-9]{6}$`. Todo el estado propio vive en Redis.
+- **Datos externos:** solo lectura. Sin JOINs ni `SELECT *`. Solo llaves primarias e índices existentes. Consultas parametrizadas. El nombre de la partición de `tbl_cadena` se calcula con la fecha UTC, cumple ^[0-9]{6}$ y se usa solo si existe en el catálogo. Todo el estado propio vive en Redis.
 - **Red:** solo salidas. El middleware no abre sockets ni escucha en ningún puerto. Los comandos a los equipos salen únicamente por la API de comandos (spec 007).
 - **Comandos:** se validan antes de armarse (spec 003) y se registran en la auditoría **antes** de enviarse; si la auditoría falla, no se envía. Nunca se crea una `Idempotency-Key` nueva para reintentar una petición de resultado incierto. Retransmitir por falta de ACK solo con clave nueva y la política de la spec 002. `COMMAND_DRY_RUN=true` ejecuta todo sin llamar a la API.
 - **Secretos:** `COMMAND_API_KEY` `REDIS_URL` nunca aparece en el repositorio, en logs ni en la auditoría.
@@ -86,7 +86,6 @@ ACK_RESEND_ENABLED=true
 CATALOG_REVALIDATE_MS=300000
 CHAIN_BATCH_LIMIT=500
 CHAIN_OVERLAP_MS=10000
-PARTITION_REFRESH_MS=600000
 COMMAND_API_URL=
 COMMAND_API_KEY= # (secreto): se entrega con LoadCredential como command-api-key; la variable de entorno es solo respaldo para desarrollo.
 COMMAND_API_TIMEOUT_MS=10000

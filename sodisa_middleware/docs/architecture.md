@@ -52,10 +52,10 @@ Vigente ⇔ `bol_enuso` e `int_estado` ∈ {3, 4}. `bol_enuso = false` equivale 
 **Zona horaria:** toda la BD guarda **UTC** (verificado: `dt_registro` de una asignación recién creada iba 6 horas adelante de la hora local). `ASSIGNMENT_TZ = UTC`.
 
 ## 5. Tramas por partición semanal
-- Una partición nueva por semana, con nombre `YYYYWW`, creada los jueves a las 00:00 UTC. Ejemplo: la `202645` empieza el 2026-11-05 00:00:00.029815.
+- Una partición nueva por semana, con nombre `YYYYWW`, creada a las 00:00 UTC del día de corte (jueves en 2026; cambia cada año)
 - Permisos siempre vigentes desde tres meses atrás hasta la semana actual; no se piden cada semana.
 - Índices: `idx_hora (dt_trama)` e `idx_dispositivo_fecha (int_iddispositivo, dt_trama)`. `int_id` es llave primaria y crece entre particiones.
-- **El nombre no se calcula con una fórmula**: se descubre consultando el catálogo (`pg_namespace`, `pg_class`) al arrancar y cada `PARTITION_REFRESH_MS`. La semana 1 y el día de corte cambian cada año.
+- - **El nombre se calcula con la fecha UTC y se verifica en el catálogo.** Cada partición tiene CHECK (int_semana = YYYYWW); el catálogo no guarda rangos de fechas. Regla verificada con los nombres reales (202553, 202601, 202645): YYYYWW = año × 100 + semana, con semana = parte entera de (día del año − 1) / 7, más 1 (el 1 de enero es el día 1). No es semana ISO. La semana 53 dura 1 o 2 días y el 1 de enero siempre abre la semana 01. Hay particiones futuras pre-creadas, por eso "la más nueva" no es la actual. Una sola partición para todo el servicio; el catálogo (pg_namespace, pg_class) solo se consulta cuando el nombre calculado no está en la última lista conocida.
 - **Lectura por equipo**: una consulta por equipo en espera, secuencial, desde un solo poller, usando `idx_dispositivo_fecha`. El costo en la BD crece con el número de equipos en espera, no con el tráfico de la plataforma.
 
 ## 6. API de comandos
@@ -90,7 +90,6 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 | `CATALOG_REVALIDATE_MS` | `300000` | Edad máxima de un dato en caché antes de revalidarlo |
 | `CHAIN_BATCH_LIMIT` | `500` | Filas máximas por consulta de tramas |
 | `CHAIN_OVERLAP_MS` | `10000` | Solapamiento del cursor de tramas |
-| `PARTITION_REFRESH_MS` | `600000` | Redescubrimiento de particiones |
 | `COMMAND_API_URL` | — | URL de la API de comandos |
 | `COMMAND_API_KEY` | — | Secreto. Nunca en el repo ni en logs, entregado por LoadCredential, no por .env |
 | `COMMAND_API_TIMEOUT_MS` | `10000` | Timeout por llamada |
@@ -106,7 +105,7 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 ## 9. Seguridad
 - Solo hay salidas de red: BD (TCP 5500), API (HTTPS) y Redis local. No se escucha en ningún puerto.
 - `buildGeoCommand` valida lat, lon, radio y serial antes de armar un comando. Es la defensa contra datos corruptos de la BD.
-- El nombre de partición solo se acepta si cumple `^[0-9]{6}$` y proviene del catálogo.
+- El nombre de partición solo se acepta si cumple `^[0-9]{6}$` y existe en el catálogo (o es el respaldo tomado de él).
 - Redis sin puerto público y con contraseña. Usuario de BD de solo lectura. Ningún secreto en logs.
 - Pendiente: spec 008 de seguridad (revisión de dependencias, rotación de claves).
 
@@ -114,7 +113,7 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 - `dt_trama` se asume hora de recepción en UTC (tiene microsegundos). Si resultara ser hora del equipo, el cursor por tiempo dejaría de ser válido.
 - Una asignación vigente por unidad. Si hay dos, se atiende la de `dt_hora_inicial` más temprana y se avisa.
 - Cambios al punto actual mientras se espera su salida se aplican al siguiente paso (limitación de la v1).
-- Cambio de partición: una trama insertada tarde en la partición anterior después del cambio no se lee (riesgo bajo).
+- Cambio de partición: se leen la partición anterior y la nueva durante los primeros 5 minutos de cada semana; una trama insertada en la anterior más de 5 minutos después del corte no se lee (riesgo bajo).
 - `State Mode 0` (spec 003): un equipo configurado fuera de la zona podría reportar una salida inmediata. Validar en la fase 2.
 - Una salida duplicada o tardía del punto anterior podría completar el siguiente. Validar en la fase 2.
 - Las rutas desordenadas (`int_tipo = 1`) aún no se atienden: se detectan y se omiten con alerta.
