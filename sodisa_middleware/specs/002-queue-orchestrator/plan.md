@@ -18,6 +18,7 @@
 14. **Límite SQL compartido.** `createChainQueryLimiter` de 002 se exporta por `index.ts`. 006 lo usa para envolver solo las consultas del `SqlClient` a particiones `tbl_cadena."YYYYWW"`, con una única consulta en vuelo. El límite cubre las múltiples consultas de una misma llamada a 001 sin cambiar su contrato; las consultas de catálogo de particiones y asignaciones quedan fuera. El limitador acumula métricas por minuto y aplica retroceso global tras fallos SQL.
 15. **Inicio independiente.** Las inicializaciones de cursor se ejecutan como trabajo pendiente por asignación, con reserva de unidad para evitar duplicados. `assignmentCycle.run()` no espera el turno SQL; el primer sondeo de tramas se inicia sin bloquear el ciclo de asignaciones. Al terminar la espera se vuelve a comprobar la vigencia antes de transmitir. `stop()` cancela esperas pendientes y espera la consulta en vuelo.
 16. **Registro agregado.** El poller emite `chain_poll_summary` cada minuto con las métricas del limitador, rezago y equipos; `chain_poll_saturated` se limita a un aviso por minuto. `effectiveIntervalMs` es el máximo entre el objetivo por equipo y el tiempo requerido por la carga al tope configurado.
+17. **Partición semanal y cursores futuros.** 001 conserva marcas independientes por partición (004) y usa el limitador compartido. Antes de leer un cursor futuro heredado, el poller lo reancla a la primera transmisión persistida del paso; en estados antiguos `AWAITING_ACK` deriva `ackDeadline − backoff`, o usa `startedAt` solo en paso 0. Sin ancla segura hace `initCursor` y no procesa frames en ese turno; registra `chain_cursor_reset` sin secretos. El cursor se guarda tras aplicar el lote.
 
 ## Estructura
 ```
@@ -44,6 +45,8 @@ Enmienda de estados: retirar la opción del margen → usar el predicado de 001 
 Enmienda de hora final y errores: eliminar la comparación → aislar selección/inicio por fila y contar fallos → añadir el descriptor común y aplicarlo a todos los registros pedidos → probar continuidad y redacción.
 
 Enmienda de carga: actualizar contratos de 002/006 → limitador SQL compartido y pruebas de ventanas y fallos → cola por equipo y arranques pendientes → métricas por minuto → cableado y configuración → pruebas con reloj simulado → lint, build y tests.
+
+Enmienda de particiones: marcas de 004 y selección de 001 → conservar el limitador en la ventana doble → reparar cursores futuros desde la transmisión del paso → pruebas de reinicio, registro y ausencia de ACK histórico.
 
 ## Riesgos
 - El traductor de `jobId` tiene prueba unitaria. El adaptador completo de BullMQ queda sin prueba de integración automática porque Redis en memoria no soporta sus scripts; se verifica en el despliegue sombra.

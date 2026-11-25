@@ -110,8 +110,9 @@ export function buildApp(config: AppConfig, logger: Logger, factories: AppFactor
           const assignments = createAssignmentDetector(sql, { assignmentTz: config.assignmentTz });
           const chains = createChainReader(rateLimitedChainSql(sql, chainQueryLimiter), { assignmentTz: config.assignmentTz,
             chainBatchLimit: config.chainBatchLimit, chainOverlapMs: config.chainOverlapMs,
-            partitionRefreshMs: config.partitionRefreshMs, now: factories.now,
-            onAlert: (alert) => logger.warn('chain_alert', { timestamp: now(), ...alert }) });
+            now: factories.now,
+            onAlert: (alert) => logger.warn('chain_alert', { timestamp: now(), ...alert }),
+            onPartitionSelected: (event) => logger.info('chain_partition_selected', { timestamp: now(), ...event }) });
           const devices = new PgDeviceDirectory(sql);
           const plans = new PgRoutePlanRepository(sql, cache, { revalidateMs: config.catalogRevalidateMs,
             now: () => new Date(factories.now()), onNotice: (message) => logger.warn('catalog_notice', { timestamp: now(), message }) });

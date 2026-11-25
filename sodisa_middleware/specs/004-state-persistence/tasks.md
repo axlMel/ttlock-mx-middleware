@@ -17,3 +17,4 @@
 - [x] Confirmar que `npm test` y `npm run lint` pasan, sin red, BD ni Docker.
 - [x] Anotar en `plan.md` cualquier ajuste que haya sido necesario (por ejemplo, si `ioredis-mock` no soporta `multi`). No hubo ajustes: `ioredis-mock` soportó `multi`.
 - [x] Marcar esta lista como completa y actualizar la fila de 004 en la tabla de `AGENTS.md` a "Implementado".
+- [x] Enmienda de particiones: añadir `firstTransmissionAt` a `RouteState` y la marca opcional `previous` a `ChainCursor`; probar ida y vuelta y compatibilidad con JSON antiguo, sin cambiar las llaves Redis.

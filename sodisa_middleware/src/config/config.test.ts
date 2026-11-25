@@ -12,7 +12,7 @@ test('convierte defaults, pares y booleanos', () => {
   expect(config).toMatchObject({ assignmentTz: 'UTC', pollIntervalMsRoutes: 10000,
     chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: 3, ackRetryBackoffMs: 150000, ackMaxRetries: 3,
     ackResendEnabled: true, catalogRevalidateMs: 300000, chainBatchLimit: 500,
-    chainOverlapMs: 10000, partitionRefreshMs: 600000, commandApiTimeoutMs: 10000,
+    chainOverlapMs: 10000, commandApiTimeoutMs: 10000,
     dryRun: false, auditLogDir: './audit' });
   expect(loadConfig({ ...valid, COMMAND_DRY_RUN: 'true', ACK_RESEND_ENABLED: 'false', CHAIN_OVERLAP_MS: '0' }, missingFile))
     .toMatchObject({ dryRun: true, ackResendEnabled: false, chainOverlapMs: 0 });
@@ -20,7 +20,7 @@ test('convierte defaults, pares y booleanos', () => {
 
 test.each(['POLL_INTERVAL_MS_ROUTES', 'CHAIN_POLL_INTERVAL_MS',
   'ACK_RETRY_BACKOFF_MS', 'ACK_MAX_RETRIES', 'CATALOG_REVALIDATE_MS', 'CHAIN_BATCH_LIMIT',
-  'PARTITION_REFRESH_MS', 'COMMAND_API_TIMEOUT_MS'])('%s exige entero positivo', (name) => {
+  'COMMAND_API_TIMEOUT_MS'])('%s exige entero positivo', (name) => {
   expect(() => loadConfig({ ...valid, [name]: '0' }, missingFile)).toThrow(name);
   expect(() => loadConfig({ ...valid, [name]: '1.5' }, missingFile)).toThrow(name);
 });
@@ -30,6 +30,12 @@ test('acepta tasa decimal positiva e ignora la variable de sondeo anterior', () 
   expect(config.chainMaxQueriesPerSecond).toBe(0.5);
   expect(config).not.toHaveProperty('pollIntervalMsAck');
   expect(redactConfig(config)).not.toHaveProperty('pollIntervalMsAck');
+});
+
+test('PARTITION_REFRESH_MS obsoleta se ignora y no figura en startup_config', () => {
+  const config = loadConfig({ ...valid, PARTITION_REFRESH_MS: 'inválido' }, missingFile);
+  expect(config).not.toHaveProperty('partitionRefreshMs');
+  expect(redactConfig(config)).not.toHaveProperty('partitionRefreshMs');
 });
 
 test.each(['0', '-1', 'Infinity', 'NaN', '', '1e999'])('rechaza tasa inválida %s', (value) => {

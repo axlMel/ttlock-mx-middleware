@@ -140,7 +140,8 @@ export class AssignmentCycle {
           apiCompanyId: this.opts.enabledCompanies.get(row.companyId)!, unitId: row.unitId,
           deviceId: device.deviceId, model: device.model, catalogRouteId: row.catalogRouteId, routeType: 0,
           fsmState: 'PENDING', currentPointId: plan.points[0].pointId, completedPointIds: [], stepSeq: 0,
-          transmissionSeq: 0, retryCount: 0, pendingRequest: null, lastAcceptedCommand: null, ackDeadline: null, closing: null,
+          transmissionSeq: 0, retryCount: 0, pendingRequest: null, lastAcceptedCommand: null, firstTransmissionAt: null,
+          ackDeadline: null, closing: null,
           startedAt: now, updatedAt: now };
         await this.deps.routeStates.set(state);
         this.unitIndex.set(row.unitId, row.assignmentId);

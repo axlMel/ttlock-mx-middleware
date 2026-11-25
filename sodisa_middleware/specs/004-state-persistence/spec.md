@@ -38,16 +38,20 @@ interface RouteState {
   retryCount: number;            // retransmisiones del paso (solo informativo)
   pendingRequest: PendingRequest | null; // guardada ANTES de llamar a la API
   lastAcceptedCommand: string | null; // comando del paso aceptado; ausente en estados antiguos equivale a null
+  firstTransmissionAt: string | null; // ISO del primer intento del paso, guardado antes de invocar al gateway; ausente equivale a null
   ackDeadline: string | null;    // ISO: fin de la ventana de ACK de la última transmisión aceptada
   closing: null | { reason: 'ROUTE_DONE' | 'ASSIGNMENT_ENDED'; finalEstado: number | null };
   startedAt: string;
   updatedAt: string;
 }
 
-interface ChainCursor {
+interface PartitionMark {
   partition: string;             // 'YYYYWW'
   dtTrama: string | null;        // texto con microsegundos como lo entrega la BD; null = inicio de la partición
   recentIds: number[];           // int_id ya procesados dentro de la ventana de solapamiento
+}
+interface ChainCursor extends PartitionMark {
+  previous?: (PartitionMark & { hasMore: boolean }) | null; // solo nace al cruzar; hasMore permite terminar un drenaje tras los cinco minutos
 }
 
 interface CatalogEntry<T> { value: T; dtModificacion: string | null; fetchedAt: string }
@@ -88,6 +92,8 @@ interface CatalogCacheStore {
 - Redis requiere `appendonly yes` y `maxmemory-policy noeviction` (requisito de despliegue; Ever).
 - Leer algo inexistente devuelve `null`, no un error. `getByDevice` devuelve `null` si el índice apunta a una asignación que ya no existe.
 - Al leer un `RouteState` anterior sin `lastAcceptedCommand`, se devuelve `lastAcceptedCommand: null`.
+- Al leer un `RouteState` anterior sin `firstTransmissionAt`, se devuelve `firstTransmissionAt: null`. El campo se conserva en retransmisiones del mismo paso y se limpia al cambiar de paso.
+- Un `ChainCursor` anterior sin `previous` es válido y se interpreta como `null`. El store guarda ambas marcas en la misma llave `chain-cursor:{deviceId}` para que sobrevivan juntas a un reinicio.
 - **Valores corruptos** (JSON inválido en una llave): `get` y `getByDevice` lanzan `CorruptStateError` (mensaje en español con la llave). `list()` **omite** las llaves corruptas y avisa con un callback opcional `onCorrupt(key, error)`; nunca falla por una sola llave dañada (principio VII).
 
 ## Criterios de aceptación
@@ -98,6 +104,7 @@ interface CatalogCacheStore {
 - [ ] `FsmState` no contiene `FAILED` ni `PAUSED`.
 - [ ] `routeType` se guarda y se lee dentro del `RouteState`.
 - [ ] `lastAcceptedCommand` se guarda y se lee; un estado antiguo sin el campo se lee con `null`.
+- [ ] `firstTransmissionAt` y ambas marcas de `ChainCursor` hacen ida y vuelta en Redis; se leen estados antiguos sin esos campos.
 - [ ] Un JSON corrupto hace que `get` lance `CorruptStateError`, y que `list()` omita esa llave, llame a `onCorrupt` y devuelva las demás.
 - [ ] `list()` no incluye llaves `device-route:` ni otras ajenas a `route:{número}`.
 - [ ] Ninguna prueba toca PostgreSQL ni requiere un Redis real.

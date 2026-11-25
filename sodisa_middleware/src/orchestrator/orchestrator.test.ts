@@ -121,6 +121,8 @@ test('tras reiniciar se retransmite el comando aceptado aunque cambie el plan', 
   try {
     await h.runAssignments();
     const original = h.sent[0].command;
+    const firstTransmissionAt = (await h.routeStates.get(42))?.firstTransmissionAt;
+    expect(firstTransmissionAt).toBe('2026-11-17T12:00:00.000Z');
     h.setPlan({ routeType: 0, points: [point(1, -90), point(2, -91)] });
     const resumed = new StepRunner(h.deps, h.opts, async () => 'COMANDO_DEL_PLAN_NUEVO');
     h.scheduler.onTask((task) => resumed.onTask(task));
@@ -131,6 +133,7 @@ test('tras reiniciar se retransmite el comando aceptado aunque cambie el plan', 
     expect(h.sent[1].command).toBe(original);
     expect(h.sent[1].idempotencyKey).toBe('42-0-2');
     expect(h.sent[1].command).toContain(',0000$');
+    expect((await h.routeStates.get(42))?.firstTransmissionAt).toBe(firstTransmissionAt);
   } finally { h.redis.disconnect(); }
 });
 

@@ -29,9 +29,9 @@ class FakeSql implements SqlClient {
   }
 }
 
-const options = (alerts: ChainAlert[], now: () => number = () => 0): DetectorOptions => ({
+const options = (alerts: ChainAlert[], now: () => number = () => Date.parse('2026-11-24T12:00:00Z')): DetectorOptions => ({
   assignmentTz: 'UTC', chainBatchLimit: 2, chainOverlapMs: 10_000,
-  partitionRefreshMs: 1000, now, onAlert: (alert) => alerts.push(alert),
+  now, onAlert: (alert) => alerts.push(alert),
 });
 const table = (partition: string) => `tbl_cadena."${partition}"`;
 
@@ -79,22 +79,28 @@ test('microsegundos acepta 0 a 6 decimales y distingue 1 µs', () => {
   expect(() => toMicros('incorrecto')).toThrow();
 });
 
-test('P0 cachea nombres y alerta una partición desaparecida', async () => {
+test('P0 verifica bajo demanda, comparte vuelo y usa respaldo sin consultas frecuentes', async () => {
   const db = new FakeSql();
   const alerts: ChainAlert[] = [];
-  let time = 0;
-  const partitions = new Partitions(db, 1000, () => time, (alert) => alerts.push(alert));
-  expect(await partitions.current()).toEqual(['202647', '202646']);
-  await partitions.current();
-  expect(db.calls).toHaveLength(2);
-  db.partitions = ['202648', '202647'];
-  time = 1000;
-  await partitions.current();
-  expect(alerts).toContainEqual(expect.objectContaining({ code: 'PARTITION_DISAPPEARED', partition: '202646' }));
+  let time = Date.parse('2026-11-24T12:00:00Z');
+  const partitions = new Partitions(db, () => time, (alert) => alerts.push(alert));
+  expect((await Promise.all([partitions.resolveCurrent(), partitions.resolveCurrent()]))[0].partition).toBe('202647');
+  await partitions.resolveCurrent();
+  expect(db.calls.filter((call) => call.text === PARTITIONS_SQL)).toHaveLength(1);
+  expect(PARTITIONS_SQL).not.toContain('LIMIT');
   expect(() => partitions.quote('202647;DROP')).toThrow();
-  db.partitions = ['202649;DROP'];
-  time = 2000;
-  await expect(partitions.current()).rejects.toThrow('inválido');
+  time = Date.parse('2026-11-26T00:00:00Z');
+  expect((await partitions.resolveCurrent()).partition).toBe('202647');
+  expect((await partitions.resolveCurrent()).fallback).toBe(true);
+  expect(alerts.filter((alert) => alert.code === 'PARTITION_NOT_FOUND')).toHaveLength(1);
+  expect(db.calls.filter((call) => call.text === PARTITIONS_SQL)).toHaveLength(2);
+  db.partitions = ['202648', '202647', 'bad-name'];
+  time += 59_999;
+  expect((await partitions.resolveCurrent()).partition).toBe('202647');
+  time += 1;
+  expect((await partitions.resolveCurrent()).partition).toBe('202648');
+  expect(db.calls.filter((call) => call.text === PARTITIONS_SQL)).toHaveLength(3);
+  expect(partitions.has('bad-name')).toBe(false);
 });
 
 test('initCursor lee C0 y C0b; sin tramas usa null; 42501 cae a la anterior', async () => {
@@ -146,18 +152,19 @@ test('ventana de 0 ms distingue filas separadas por 1 µs', async () => {
   expect(result.hasMore).toBe(true);
 });
 
-test('cambio de partición lee C1b; 42501 mantiene cursor y alerta una vez', async () => {
+test('cambio de partición lee ambas marcas; 42501 mantiene cursor y alerta una vez', async () => {
   const db = new FakeSql();
   const alerts: ChainAlert[] = [];
   const reader = createChainReader(db, options(alerts));
   const cursor = { partition: '202646', dtTrama: t0, recentIds: [1] };
   db.unreadable.add('202647');
-  expect((await reader.readNew(70177, cursor)).cursor).toBe(cursor);
-  expect((await reader.readNew(70177, cursor)).cursor).toBe(cursor);
+  expect((await reader.readNew(70177, cursor)).cursor).toEqual(cursor);
+  expect((await reader.readNew(70177, cursor)).cursor).toEqual(cursor);
   expect(alerts.filter((alert) => alert.code === 'PARTITION_UNREADABLE')).toHaveLength(1);
   db.unreadable.delete('202647');
   db.rows[fromStartSql(table('202647'))] = [frame(3, t1, raw)];
-  expect((await reader.readNew(70177, cursor)).cursor).toEqual({ partition: '202647', dtTrama: t1, recentIds: [3] });
+  expect((await reader.readNew(70177, cursor)).cursor).toEqual({ partition: '202647', dtTrama: t1, recentIds: [3],
+    previous: { ...cursor, hasMore: false } });
 });
 
 test('SQL de detectores evita JOIN y SELECT *', () => {

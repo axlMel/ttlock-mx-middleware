@@ -24,16 +24,20 @@ export interface RouteState {
   retryCount: number;
   pendingRequest: PendingRequest | null;
   lastAcceptedCommand: string | null;
+  firstTransmissionAt: string | null;
   ackDeadline: string | null;
   closing: null | { reason: 'ROUTE_DONE' | 'ASSIGNMENT_ENDED'; finalEstado: number | null };
   startedAt: string;
   updatedAt: string;
 }
 
-export interface ChainCursor {
+export interface PartitionMark {
   partition: string;
   dtTrama: string | null;
   recentIds: number[];
+}
+export interface ChainCursor extends PartitionMark {
+  previous?: (PartitionMark & { hasMore: boolean }) | null;
 }
 
 export interface CatalogEntry<T> {

@@ -12,7 +12,7 @@ const state: RouteState = {
   fsmState: 'AWAITING_ACK', currentPointId: 5, completedPointIds: [3],
   stepSeq: 2, transmissionSeq: 1, retryCount: 0,
   pendingRequest: { idempotencyKey: 'key-42', body: { companyId: 2, unitId: '81', comando: 'AT+GTGEO$' } },
-  lastAcceptedCommand: 'AT+GTGEO$',
+  lastAcceptedCommand: 'AT+GTGEO$', firstTransmissionAt: '2026-11-16T12:00:00.000Z',
   ackDeadline: '2026-11-16T12:01:00.000Z', closing: null,
   startedAt: '2026-11-16T12:00:00.000Z', updatedAt: '2026-11-16T12:00:01.000Z',
 };
@@ -68,12 +68,13 @@ test('getByDevice devuelve null si el índice apunta a ruta ausente', async () =
   expect(await new RedisRouteStateStore(redis).getByDevice(9001)).toBeNull();
 });
 
-test('RouteState antiguo sin lastAcceptedCommand se lee como null', async () => {
+test('RouteState antiguo sin lastAcceptedCommand ni firstTransmissionAt se lee con ambos en null', async () => {
   const previous = { ...state } as Partial<RouteState>;
   delete previous.lastAcceptedCommand;
+  delete previous.firstTransmissionAt;
   await redis.set(routeKey(42), JSON.stringify(previous));
   const store = new RedisRouteStateStore(redis);
-  await expect(store.get(42)).resolves.toEqual({ ...previous, lastAcceptedCommand: null });
+  await expect(store.get(42)).resolves.toEqual({ ...previous, lastAcceptedCommand: null, firstTransmissionAt: null });
 });
 
 test('JSON corrupto lanza en get y getByDevice; list avisa, omite y continúa', async () => {
@@ -98,6 +99,15 @@ test('cursor por dispositivo guarda, lee y borra sin TTL', async () => {
   expect(await redis.ttl(chainCursorKey(9001))).toBe(-1);
   await store.delete(9001);
   expect(await store.get(9001)).toBeNull();
+});
+
+test('cursor conserva las dos marcas al reiniciar el store y acepta JSON anterior', async () => {
+  const mark = { partition: '202646', dtTrama: '2026-11-16 12:00:00.123456', recentIds: [1] };
+  const cursor: ChainCursor = { partition: '202647', dtTrama: null, recentIds: [], previous: { ...mark, hasMore: true } };
+  await new RedisChainCursorStore(redis).set(9001, cursor);
+  await expect(new RedisChainCursorStore(redis).get(9001)).resolves.toEqual(cursor);
+  await redis.set(chainCursorKey(9001), JSON.stringify(mark));
+  await expect(new RedisChainCursorStore(redis).get(9001)).resolves.toEqual(mark);
 });
 
 test('caché por entidad e id guarda, lee y borra sin TTL', async () => {

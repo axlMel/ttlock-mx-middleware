@@ -28,7 +28,7 @@ interface AssignmentDetector {
 }
 
 interface ChainFrame { frameId: number; deviceId: number; receivedAt: string; raw: Buffer }
-interface ChainAlert { code: 'PARTITION_UNREADABLE' | 'PARTITION_DISAPPEARED' | 'CHAIN_WINDOW_SATURATED'; partition: string; message: string }
+interface ChainAlert { code: 'PARTITION_UNREADABLE' | 'PARTITION_NOT_FOUND' | 'CHAIN_WINDOW_SATURATED'; partition: string; message: string }
 interface ChainReader {
   initCursor(deviceId: number): Promise<ChainCursor>;
   readNew(deviceId: number, cursor: ChainCursor): Promise<{ frames: ChainFrame[]; cursor: ChainCursor; hasMore: boolean }>;
@@ -38,12 +38,15 @@ interface DetectorOptions {
   assignmentTz: string;        // ASSIGNMENT_TZ
   chainBatchLimit: number;     // CHAIN_BATCH_LIMIT
   chainOverlapMs: number;      // CHAIN_OVERLAP_MS
-  partitionRefreshMs: number;  // PARTITION_REFRESH_MS
   now?: () => number;          // reloj inyectable
   onAlert?: (alert: ChainAlert) => void;
+  onPartitionSelected?: (event: { partition: string; computed: string; fallback: boolean }) => void;
 }
 function createAssignmentDetector(db: SqlClient, opts: Pick<DetectorOptions,'assignmentTz'>): AssignmentDetector;
 function createChainReader(db: SqlClient, opts: DetectorOptions): ChainReader;
+function weekLabel(ms: number): string;
+function weekStartMs(label: string): number;
+function previousLabel(label: string): string;
 const VIGENT_STATES: readonly [3, 4];
 function isActiveAssignment(row: AssignmentRow): boolean; // row.enUso && VIGENT_STATES.includes(row.estado)
 ```
@@ -80,14 +83,14 @@ ORDER BY dt_trama LIMIT $4;
 SELECT int_id, dt_trama::text AS dt_trama, bytea_mensaje FROM tbl_cadena."<partición>"
 WHERE int_iddispositivo = $1 ORDER BY dt_trama LIMIT $2;
 
--- P0. Descubrimiento de particiones (catálogo, sin JOIN)
+-- P0. Verificación de particiones (catálogo, sin JOIN). Solo cuando el nombre calculado no está en la última lista.
 SELECT oid FROM pg_namespace WHERE nspname = 'tbl_cadena';
 SELECT relname FROM pg_class
 WHERE relnamespace = $1 AND relkind IN ('r','p') AND relname ~ '^[0-9]{6}$'
-ORDER BY relname DESC LIMIT 2;
+ORDER BY relname DESC;
 ```
 `$2` de A1/A2 es `assignmentTz`. `$3` de C0b/C1 es `chainOverlapMs`; `$4` de C1 es `chainBatchLimit`.
-El nombre de partición solo se acepta si viene de P0 y cumple `^[0-9]{6}$`; se cita como identificador y nunca se concatena texto externo.
+El nombre de partición se calcula con `weekLabel` (sección «Tramas»), cumple `^[0-9]{6}$`, se usa solo si aparece en P0 (o es el respaldo tomado de P0) y se cita como identificador; nunca se concatena texto externo.
 Las columnas `dt_hora_inicial`, `dt_hora_final`, `dt_modificacion` y `dt_trama` son `timestamp without time zone`: `AT TIME ZONE` las interpreta en `assignmentTz` y `::text` conserva la precisión completa. No se configura ningún parser global de tipos de `pg`.
 
 ## Reglas
@@ -114,14 +117,32 @@ Una asignación puede aparecer directamente en estado 4.
 
 **Tramas**
 - Un `ChainReader` por proceso. Se consulta **un equipo por llamada**; el orquestador las encadena de forma secuencial.
-- “Partición actual” = la más nueva de P0 que sea legible. Una partición es **no legible** cuando la consulta falla con el código `42501` (permiso denegado: el acceso se otorga por partición). Cualquier otro error se propaga.
-- `initCursor`: C0 y C0b en la partición actual. Sin tramas → `{ partition, dtTrama: null, recentIds: [] }`. Si ninguna de las dos particiones es legible, lanza error.
-- `readNew`: C1 (o C1b si `dtTrama` es null) en `cursor.partition`. Descarta filas cuyo `int_id` esté en `recentIds`. El nuevo `dtTrama` es el mayor de todas las filas devueltas. Los nuevos `recentIds` son los ids de **todas** las filas devueltas (también las descartadas) cuyo `dt_trama` esté dentro de `chainOverlapMs` del nuevo `dtTrama`; la comparación usa microsegundos enteros (sin pasar por `Date`). `hasMore` es verdadero si la consulta devolvió `chainBatchLimit` filas.
-- Si la consulta devolvió `chainBatchLimit` filas y todas eran duplicadas (el cursor no puede avanzar), se emite `CHAIN_WINDOW_SATURATED`.
-- **Cambio de partición:** si la actual no devuelve filas y existe una partición más nueva, se consulta esa con C1b. Si es legible, el cursor pasa a ella con `dtTrama` de su última fila. Si no es legible (`42501`), se sigue en la actual y se emite `PARTITION_UNREADABLE` (una sola vez por partición mientras siga sin permiso).
-- Limitación documentada: una trama que llegara a la partición anterior después de pasar a la nueva no se lee.
+- `weekLabel(ms)` usa año y día del año UTC: `floor((dayOfYear - 1) / 7) + 1`, con semana 01 desde el 1 de enero. `weekStartMs(label) = Date.UTC(year, 0, 1) + (week - 1) * 7 * 86400000`; `previousLabel(label) = weekLabel(weekStartMs(label) - 1)`. No es semana ISO. La semana 53 dura uno o dos días.
+
+| Fecha UTC | Etiqueta |
+|---|---|
+| 2025-12-10 | `202550` |
+| 2025-12-31 | `202553` |
+| 2026-01-01 | `202601` |
+| 2026-11-05 | `202645` |
+| 2026-11-19 y 2026-11-24 | `202647` |
+| 2026-11-26 | `202648` |
+| 2026-12-31 | `202653` |
+| 2027-01-01 | `202701` |
+| 2028-12-29 | `202852` |
+| 2028-12-30 y 2028-12-31 | `202853` |
+| 2030-12-31 | `203053` |
+| 2031-01-01 | `203101` |
+
+- `resolveCurrent(nowMs)` comparte una lista `known` de P0 por proceso, el OID del esquema, `lastCheckAt` y una única ejecución P0 en vuelo. Si la etiqueta calculada está en `known`, no consulta P0. Si falta, consulta P0 una vez al inicio y luego como máximo una vez cada 60 s (`PARTITION_RECHECK_MS`, constante interna). Una etiqueta ausente genera `PARTITION_NOT_FOUND` una vez y usa la mayor partición conocida menor; sin respaldo lanza error. Sin equipos que leer no se consulta P0 ni hay temporizador. Se descartan nombres que no cumplen `^[0-9]{6}$`.
+- `onPartitionSelected` informa `{ partition, computed, fallback }` tras la primera selección efectiva y cada cambio de partición, nunca por cada equipo o sondeo. El respaldo por etiqueta ausente o por `42501` se registra como `fallback: true`.
+- `readNew` lanza `PartitionNotKnownError` cuando una marca heredada apunta a un nombre que no está en P0; 002 puede entonces reiniciar el cursor sin confundir ese caso con un fallo de BD.
+- `initCursor` resuelve la partición actual y usa C0/C0b solo en ella. Si falla con `42501`, avisa una vez por partición e intenta en orden las particiones conocidas anteriores hasta encontrar una legible; otros errores se propagan. Sin tramas devuelve `dtTrama: null`, no cambia de partición ni crea `previous`.
+- `readNew` usa marcas independientes por partición (spec 004). Si `cursor.partition < P` y su `dtTrama` no es nulo, lee primero esa partición y luego `P`, y crea `previous` desde la marca antigua. Si la marca antigua es nula, consulta solo `P`: C1b sobre la anterior entregaría historial y podría confundir un ACK viejo. Si `cursor.partition === P`, solo lee la anterior dentro de los primeros cinco minutos (`PARTITION_DUAL_READ_MS = 300000`) cuando `previous` ya existe y corresponde a `previousLabel(P)`; la marca anterior no nula evita leer historial aunque la marca actual sea nula. `previous` **nunca** nace de un `initCursor` en la semana actual. Un lote anterior lleno continúa drenándose aunque termine la ventana; fuera de ella se retira `previous` al agotarse. Si `cursor.partition > P`, lee esa partición; 002 repara antes los cursores futuros heredados.
+- Cada lectura usa C1 con su propia marca de tiempo, o C1b si esa marca es nula. Se combinan filas ordenadas por `dt_trama` y luego `int_id`, se eliminan los `int_id` ya vistos y las repeticiones entre lecturas. Cada marca avanza solo con las filas de su partición: `dtTrama` es su mayor hora y `recentIds` conserva los ids de la ventana de `chainOverlapMs`, incluidos los descartados. `hasMore` es verdadero si alguna lectura llega a `chainBatchLimit`. Un lote lleno solo de duplicados emite `CHAIN_WINDOW_SATURATED` por lectura. Así una partición no adelanta la marca de la otra.
+- Si leer `P` falla con `42501` durante el cambio de semana, se avisa una vez y se conserva solo la lectura y la marca de la partición del cursor. Si el cursor ya está en `P`, el error se propaga tras alertar: no se retrocede el cursor ni se pierde su marca. Otros errores se propagan. Todas las consultas a `tbl_cadena` pasan por el limitador de 002.
+- Limitación documentada: no se lee una inserción en la partición anterior hecha más de cinco minutos después del corte, salvo que aún se esté drenando un lote anterior pendiente. El solapamiento de 10 s sigue delimitando el reordenamiento de horas dentro de cada partición.
 - `bytea_mensaje` se entrega como `Buffer`; no se usa `encode()` en SQL.
-- P0 al arrancar y cada `partitionRefreshMs`. Si una partición presente en el descubrimiento anterior ya no aparece, se emite `PARTITION_DISAPPEARED`.
 
 **Generales**
 - Consultas parametrizadas, sin JOINs ni `SELECT *`. Ninguna escritura en la BD.
@@ -132,12 +153,17 @@ Una asignación puede aparecer directamente en estado 4.
 - [ ] `VIGENT_STATES` coincide con la lista literal de A1 (prueba que extrae `IN (…)` del SQL y lo compara).
 - [ ] `listVigentes` devuelve filas tipadas y pasa `assignmentTz` como `$2`; el `Date` resultante corresponde a esa zona (prueba con una zona distinta de UTC).
 - [ ] `getById` devuelve una asignación no vigente y `null` si no existe. Una fila con id no numérico lanza error.
-- [ ] `initCursor` devuelve el cursor con ids de la ventana; sin tramas devuelve `dtTrama: null`; con la partición más nueva sin permiso usa la anterior y emite alerta.
+- [ ] `weekLabel` coincide con toda la tabla de fechas y `previousLabel('202601') = '202553'`, `previousLabel('202647') = '202646'`, `previousLabel('202701') = '202653'`.
+- [ ] Entre 2025 y 2035 las etiquetas no decrecen, cambian a la semana siguiente o al 01 del año siguiente; `weekStartMs(weekLabel(x)) <= x` y `weekLabel(weekStartMs(L)) = L`. Las semanas 01–52 duran siete días y la 53 uno o dos.
+- [ ] Con catálogo `202646`–`202651` y fecha 2026-11-24, `initCursor` consulta solo `202647`, incluso con varios equipos; P0 se ejecuta una sola vez y no contiene `LIMIT`.
+- [ ] Si falta la etiqueta actual, `PARTITION_NOT_FOUND` aparece una vez y se usa la mayor anterior; P0 se repite como máximo una vez por minuto y adopta la nueva etiqueta cuando aparece. Los nombres inválidos se descartan.
+- [ ] Un equipo sin tramas devuelve `dtTrama: null` y lecturas vacías sin cambiar partición ni emitir alertas. `42501` en `initCursor` usa la anterior legible y alerta una vez.
 - [ ] `readNew` no devuelve dos veces una trama ya vista (solapamiento y deduplicación) y avanza el cursor; `recentIds` conserva los ids de la ventana, incluidos los descartados.
 - [ ] La comparación de ventana respeta microsegundos (dos tramas a 1 µs de distancia).
 - [ ] `hasMore` es verdadero cuando se alcanza el límite; `CHAIN_WINDOW_SATURATED` cuando todas son duplicadas.
-- [ ] Cambio de partición: se agota la actual y luego se pasa a la nueva; si la nueva da `42501`, sigue en la actual con una sola alerta.
-- [ ] `PARTITION_DISAPPEARED` cuando una partición deja de aparecer en P0.
+- [ ] En el cambio `202647` → `202648`, y `202653` → `202701` o `202553` → `202601`, se leen ambas particiones en orden; sus marcas avanzan por separado sin perder filas por un lote lleno.
+- [ ] En los primeros cuatro minutos, con marca anterior heredada del cambio, se leen ambas particiones; a los seis minutos solo la actual tras drenar. `initCursor` dentro de la ventana no crea `previous` ni entrega historial antiguo, aunque la partición actual tenga tramas.
+- [ ] `42501` en la partición nueva alerta una vez y conserva la lectura de la partición del cursor; `onPartitionSelected` se invoca en la primera selección efectiva y en cada cambio, no por llamada.
 - [ ] Un nombre de partición que no cumple `^[0-9]{6}$` se rechaza.
 - [ ] `raw` llega como `Buffer` y se puede pasar a `decodeFrame` de `specs/003`.
 - [ ] Ninguna consulta contiene `JOIN` ni `SELECT *` (prueba sobre las cadenas SQL).

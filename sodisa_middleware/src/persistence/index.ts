@@ -1,4 +1,4 @@
-export type { FsmState, RouteState, PendingRequest, ChainCursor, CatalogEntry } from './types';
+export type { FsmState, RouteState, PendingRequest, ChainCursor, PartitionMark, CatalogEntry } from './types';
 export { CorruptStateError } from './types';
 export type { RouteStateStore, RouteStateStoreOptions } from './routeStateStore';
 export { RedisRouteStateStore } from './routeStateStore';

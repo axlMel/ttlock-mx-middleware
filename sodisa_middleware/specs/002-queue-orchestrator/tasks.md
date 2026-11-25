@@ -17,3 +17,4 @@
 - [x] **T15. Cola por equipo.** Sustituir el barrido por `nextPollAt`, orden del vencido, reparto uniforme, `hasMore` reencolado y primer turno inmediato. Probar 60 equipos/10 min y 200 saturados sin ráfagas.
 - [x] **T16. Independencia y registros.** Inicios de ruta pendientes sin bloquear asignaciones, vigencia al transmitir, parada ordenada, `chain_poll_saturated` y `chain_poll_summary` por minuto; pruebas de fallos, rezago y ausencia de `chain_poll`.
 - [x] **T17. Cierre de enmienda.** `npm run lint`, `npm run build`, `npm test`, revisión de referencias antiguas y commit. Conservar `AGENTS.md` y `legacy/` intactos.
+- [x] **T18. Particiones y recuperación.** Mantener el limitador y métricas en la ventana doble; guardar primera transmisión por paso, limpiar al avanzar; reparar cursores futuros con ancla segura o `initCursor`, alertar y probar pasos posteriores sin releer salidas antiguas.

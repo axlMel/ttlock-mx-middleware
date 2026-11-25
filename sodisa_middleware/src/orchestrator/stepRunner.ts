@@ -48,6 +48,7 @@ export class StepRunner {
       if (current.transmissionSeq > 1 && !current.lastAcceptedCommand) this.deps.logger.warn('accepted_command_missing_rebuilt', this.fields(current));
       const transmissionSeq = current.transmissionSeq === 0 ? 1 : current.transmissionSeq;
       current = { ...current, fsmState: 'CONFIGURING', transmissionSeq,
+        firstTransmissionAt: current.firstTransmissionAt ?? (current.transmissionSeq === 0 ? new Date(this.now()).toISOString() : null),
         pendingRequest: { idempotencyKey: `${current.assignmentId}-${current.stepSeq}-${transmissionSeq}`,
           body: { companyId: current.apiCompanyId, unitId: String(current.unitId), comando: command } } };
       await this.save(current);

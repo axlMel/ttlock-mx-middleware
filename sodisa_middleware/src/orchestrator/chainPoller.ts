@@ -1,4 +1,5 @@
 import { decodeFrame, parseMessage } from '../protocol';
+import { PartitionNotKnownError, weekLabel } from '../detectors';
 import { describeError } from '../common';
 import type { RouteState } from '../persistence';
 import { transition } from './transition';
@@ -47,6 +48,16 @@ export class ChainPoller {
       effectiveIntervalMs: this.effectiveIntervalMs() });
     this.maxLagMs = null;
   }
+  private transmissionAnchor(state: RouteState): number | null {
+    const candidates = [state.firstTransmissionAt ? Date.parse(state.firstTransmissionAt) : NaN,
+      state.fsmState === 'AWAITING_ACK' && state.ackDeadline
+        ? Date.parse(state.ackDeadline) - this.opts.ackRetryBackoffMs : NaN,
+      state.stepSeq === 0 ? Date.parse(state.startedAt) : NaN];
+    for (const candidate of candidates) {
+      if (Number.isFinite(candidate) && candidate <= this.now()) return candidate;
+    }
+    return null;
+  }
   private async poll(state: RouteState): Promise<void> {
     await this.mutex.run(state.assignmentId, async () => {
       let cursor = await this.deps.cursors.get(state.deviceId);
@@ -54,7 +65,29 @@ export class ChainPoller {
         cursor = await this.deps.detectors.chains.initCursor(state.deviceId);
         await this.deps.cursors.set(state.deviceId, cursor);
       }
-      const result = await this.deps.detectors.chains.readNew(state.deviceId, cursor);
+      let anchor: 'transmission' | 'init' | null = null;
+      let skipRead = false;
+      if (cursor.partition > weekLabel(this.now())) {
+        const at = this.transmissionAnchor(state);
+        if (at !== null) {
+          cursor = { partition: weekLabel(at), dtTrama: new Date(at).toISOString().replace('T', ' ').replace('Z', ''), recentIds: [] };
+          anchor = 'transmission';
+        } else {
+          cursor = await this.deps.detectors.chains.initCursor(state.deviceId);
+          anchor = 'init';
+          skipRead = true;
+        }
+      }
+      let result;
+      try {
+        result = skipRead ? { frames: [], cursor, hasMore: false }
+          : await this.deps.detectors.chains.readNew(state.deviceId, cursor);
+      } catch (error) {
+        if (!(error instanceof PartitionNotKnownError) || anchor !== 'transmission') throw error;
+        cursor = await this.deps.detectors.chains.initCursor(state.deviceId);
+        result = { frames: [], cursor, hasMore: false };
+        anchor = 'init';
+      }
       for (const frame of [...result.frames].sort((a, b) => a.receivedAt.localeCompare(b.receivedAt))) {
         const lag = this.now() - Date.parse(frame.receivedAt.replace(' ', 'T') + 'Z');
         if (Number.isFinite(lag)) this.maxLagMs = Math.max(this.maxLagMs ?? 0, lag);
@@ -90,6 +123,8 @@ export class ChainPoller {
       }
       if (await this.deps.routeStates.get(state.assignmentId)) await this.deps.cursors.set(state.deviceId, result.cursor);
       else await this.deps.cursors.delete(state.deviceId);
+      if (anchor) this.deps.logger.warn('chain_cursor_reset', { timestamp: new Date(this.now()).toISOString(),
+        deviceId: state.deviceId, routeId: state.assignmentId, anchor });
       if (result.hasMore) this.backlog.add(state.deviceId);
       else this.backlog.delete(state.deviceId);
       this.nextPollAt.set(state.deviceId, result.hasMore ? this.now() + 1 : this.now() + this.opts.chainPollIntervalMs);

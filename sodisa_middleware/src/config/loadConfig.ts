@@ -12,7 +12,6 @@ export interface AppConfig {
   catalogRevalidateMs: number;
   chainBatchLimit: number;
   chainOverlapMs: number;
-  partitionRefreshMs: number;
   commandApiUrl: string;
   apiKey: string;
   commandApiTimeoutMs: number;
@@ -115,7 +114,6 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: (p
     catalogRevalidateMs: number('CATALOG_REVALIDATE_MS', 300000, 1),
     chainBatchLimit: number('CHAIN_BATCH_LIMIT', 500, 1),
     chainOverlapMs: number('CHAIN_OVERLAP_MS', 10000, 0),
-    partitionRefreshMs: number('PARTITION_REFRESH_MS', 600000, 1),
     commandApiUrl: url('COMMAND_API_URL', ['https:']), apiKey: api.value ?? '',
     commandApiTimeoutMs: number('COMMAND_API_TIMEOUT_MS', 10000, 1),
     dryRun: boolean('COMMAND_DRY_RUN', false), auditLogDir,

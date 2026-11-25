@@ -4,7 +4,7 @@
 1. **`SqlClient` compartido en `src/db/types.ts`.** 005 lo definió dentro de `src/catalog/`; se mueve a un lugar neutro y `catalog` lo importa de allí (cambio de una línea de import; sin cambio de comportamiento).
 2. **Zona y precisión resueltas en SQL.** `AT TIME ZONE $2` y `::text` evitan parsers globales de `pg` que afectarían a otros módulos y no requieren librerías de zonas horarias.
 3. **Microsegundos enteros.** `micros.ts` convierte el texto `YYYY-MM-DD HH:MM:SS[.ffffff]` a `bigint` de microsegundos para comparar la ventana sin pérdida de precisión; sin dependencias.
-4. **Particiones en `partitions.ts`.** Descubrimiento con caché por `partitionRefreshMs`, validación `^[0-9]{6}$` y cita del identificador; `chainReader.ts` solo lo consume.
+4. **Particiones en `partitions.ts`.** Etiqueta por calendario UTC, verificación de P0 solo si falta en la lista conocida (una consulta en vuelo y reintento a lo más cada 60 s), validación `^[0-9]{6}$`, respaldo anterior y cita segura del identificador. El OID se conserva; no hay temporizador ni precarga.
 5. **Legibilidad = error `42501`.** El acceso se otorga por partición; cualquier otro error es un fallo real y se propaga.
 6. **Un equipo por llamada, un lector por proceso.** El orquestador los recorre en secuencia; así la carga sobre la BD es predecible.
 7. **Alertas por callback** (`onAlert`), sin acoplar con el sistema de logs.
@@ -33,6 +33,8 @@ Enmienda de estados: actualizar A1 → exportar constante y predicado → probar
 
 Enmienda de hora final: ajustar tipo y mapeo → probar `null` y fecha sin cambiar A1/A2.
 
+Enmienda de particiones: funciones puras del calendario → P0 bajo demanda → `initCursor` en la etiqueta calculada → `readNew` con marcas independientes de 004 para semana actual y anterior → callback de selección y pruebas de cambio de año, permisos, lotes llenos y limitador.
+
 ## Riesgos
 - Si la consulta devuelve `chainBatchLimit` filas, `hasMore` es verdadero. El cursor avanza si el lote contiene al menos una fila nueva; si todas son duplicadas, no avanza y se emite `CHAIN_WINDOW_SATURATED`.
-- Cambio de partición en el borde de semana: se documenta la limitación de tramas tardías.
+- El solapamiento de 10 s sigue limitando el reordenamiento dentro de una partición; una trama insertada en la anterior después de los primeros cinco minutos del corte no se vuelve a consultar, salvo drenaje pendiente.

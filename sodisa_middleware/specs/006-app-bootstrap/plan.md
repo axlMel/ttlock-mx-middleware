@@ -17,6 +17,7 @@
 14. **Causa segura de fallo de arranque.** Importar `describeError` desde la entrada pública `src/common/index.ts`, definida con 002; registrar solo nombre y código en `startup_failed`, además del `stage` existente en `buildApp`. Omitir el mensaje porque puede contener credenciales.
 15. **Consultas de tramas con tope.** Crear el `ChainQueryLimiter` de 002 antes de construir `ChainReader`; envolver su `SqlClient` para interceptar únicamente SQL de particiones `tbl_cadena."YYYYWW"`. Compartir el mismo limitador con el orquestador. Mantener independientes las consultas de asignaciones y del catálogo de particiones.
 16. **Configuración nueva.** Reemplazar `POLL_INTERVAL_MS_ACK` por `CHAIN_POLL_INTERVAL_MS` y `CHAIN_MAX_QUERIES_PER_SECOND`; aceptar tasas decimales positivas, ignorar la variable retirada y usar 150000 como ventana ACK por defecto. El aviso de coherencia usa 60000 ms de reporte y 30000 ms de margen, sin impedir arrancar.
+17. **Partición por calendario.** Retirar `PARTITION_REFRESH_MS` del entorno, `AppConfig` y el cableado. `ChainReader` resuelve bajo demanda y `onPartitionSelected` escribe `chain_partition_selected` en el mismo `Logger`, sin consultar P0 durante el arranque.
 
 ## Estructura
 ```
@@ -41,6 +42,8 @@ Enmienda de estados: retirar variable y propiedad → retirar cableado y línea 
 Enmienda de diagnóstico: usar el descriptor común en ambos registros `startup_failed` → probar código y ausencia del mensaje.
 
 Enmienda de carga: actualizar configuración y ejemplo de despliegue → conectar limitador SQL compartido → registrar aviso de coherencia y nuevas opciones → pruebas de defaults, validación, cableado y registros.
+
+Enmienda de particiones: quitar variable y opción → conectar callback de selección → probar que el valor antiguo se ignora y el primer uso registra la partición.
 
 ## Riesgos
 - BullMQ y el cliente de Redis comparten versión de `ioredis`: usar la que ya trae el proyecto.

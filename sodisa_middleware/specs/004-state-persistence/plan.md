@@ -21,12 +21,14 @@ src/persistence/
 - **`list()`:** bucle de `scan` con `MATCH route:*` y `COUNT 100` hasta que el cursor vuelva a `'0'`; cada llave se filtra con `^route:[0-9]+$`, de modo que `device-route:` nunca entra.
 - **Valores corruptos:** `CorruptStateError` en `get` y `getByDevice`; `list()` omite la llave y llama a `onCorrupt` (opción del constructor, opcional). Así un dato dañado no detiene el arranque del orquestador (principio VII).
 - **Sin TTL.** La vigencia de la caché de catálogo la gestiona el módulo 005.
+- **Marcas por partición y hora de envío.** `ChainCursor` conserva `previous` como marca opcional con `hasMore` en el mismo JSON, para terminar lotes anteriores llenos después de la ventana; `RouteState` conserva `firstTransmissionAt` por paso. Al leer JSON anterior, se interpretan ambos campos ausentes como `null`, sin migración de llaves. Se evita que la lectura de una partición adelante la marca de otra.
 - **Se elimina:** `PollingCursorStore` (el cursor ahora es por equipo) y el `RouteState` antiguo. Solo los usaba el código estacionado en `legacy/`.
 
 ## Pruebas
 - Jest con `ioredis-mock`. Sin red, sin BD y sin Docker.
 - Casos de `RouteStateStore`: guardar y leer; inexistente → `null`; `getByDevice`; `delete` limpia las dos llaves; `list()` devuelve varias rutas y excluye `device-route:`; JSON corrupto (`get` lanza, `list` omite y avisa).
 - Casos de `ChainCursorStore` y `CatalogCacheStore`: guardar, leer, borrar, inexistente → `null`.
+- Ida y vuelta de las dos marcas y de `firstTransmissionAt`, incluida lectura de JSON anterior sin esos campos.
 - Una prueba comprueba que `routeType` hace el viaje completo de ida y vuelta.
 - Una prueba comprueba, en tipos o en datos, que `FsmState` no incluye `FAILED` ni `PAUSED`.
 

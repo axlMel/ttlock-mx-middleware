@@ -92,13 +92,13 @@ Comandos: punto → `buildGeoCommand` con modo 3 (entra y sale), zona 0 y los da
 | # | Estado | Evento | Estado nuevo | Efecto |
 |---|---|---|---|---|
 | 1 | (sin estado) | asignación elegible | `PENDING` | ver "Al iniciar" |
-| 2 | `PENDING` | paso listo | `CONFIGURING` | se arma el comando (003), `transmissionSeq = 1`, se guarda `pendingRequest` con clave nueva y se llama al gateway |
+| 2 | `PENDING` | paso listo | `CONFIGURING` | se arma el comando (003), `transmissionSeq = 1`, se guarda `pendingRequest` con clave nueva y, antes de invocar al gateway por primera vez en el paso, `firstTransmissionAt` |
 | 3 | `CONFIGURING` | gateway `ACCEPTED` o `DRY_RUN` | `AWAITING_ACK` | se guarda `lastAcceptedCommand` con el comando del paso y se limpia `pendingRequest`; con `opts.dryRun = false`, `ackDeadline = ahora + ackRetryBackoffMs` y se programa `ACK_DEADLINE`; con `opts.dryRun = true`, `ackDeadline = null` y no se programa |
 | 4 | `CONFIGURING` (con `pendingRequest`) o `AWAITING_ACK` | `ack` con el serial del paso | `IN_ZONE`, o fila 9 si es el paso de reset | se descartan `pendingRequest` y `lastAcceptedCommand`; se cancelan temporizadores del paso |
 | 5 | `AWAITING_ACK` | `ackDeadline` vencido sin ACK | `CONFIGURING` | `transmissionSeq + 1`, `retryCount + 1`, clave nueva (ver "Retransmisión") |
 | 6 | `IN_ZONE` | `zoneEvent` entrada | `AWAITING_EXIT_ALERT` | informativo |
-| 7 | `IN_ZONE` o `AWAITING_EXIT_ALERT` | `zoneEvent` salida | `PENDING` | `currentPointId` pasa a `completedPointIds`; se relee el plan con `forceFresh`; el siguiente es el primer punto no cumplido; si no hay, el paso de reset con `closing = ROUTE_DONE`; `stepSeq + 1`, `transmissionSeq = 0`, `retryCount = 0`, `lastAcceptedCommand = null` |
-| 8 | cualquiera excepto `COMPLETED` | la asignación deja de ser vigente | `PENDING` (paso de reset) | si hubo transmisión: `closing = ASSIGNMENT_ENDED` con el estado final, `stepSeq + 1`, `transmissionSeq = 0`, `retryCount = 0`, `pendingRequest = null`, `lastAcceptedCommand = null`, se cancelan temporizadores; si no hubo ninguna, se elimina el estado |
+| 7 | `IN_ZONE` o `AWAITING_EXIT_ALERT` | `zoneEvent` salida | `PENDING` | `currentPointId` pasa a `completedPointIds`; se relee el plan con `forceFresh`; el siguiente es el primer punto no cumplido; si no hay, el paso de reset con `closing = ROUTE_DONE`; `stepSeq + 1`, `transmissionSeq = 0`, `retryCount = 0`, `lastAcceptedCommand = null`, `firstTransmissionAt = null` |
+| 8 | cualquiera excepto `COMPLETED` | la asignación deja de ser vigente | `PENDING` (paso de reset) | si hubo transmisión: `closing = ASSIGNMENT_ENDED` con el estado final, `stepSeq + 1`, `transmissionSeq = 0`, `retryCount = 0`, `pendingRequest = null`, `lastAcceptedCommand = null`, `firstTransmissionAt = null`, se cancelan temporizadores; si no hubo ninguna, se elimina el estado |
 | 9 | `AWAITING_ACK` o `CONFIGURING` (paso de reset) | `ack` del reset | `COMPLETED` si `closing = ROUTE_DONE`; se elimina el estado si `ASSIGNMENT_ENDED` | |
 | 10 | `COMPLETED` | la asignación deja de ser vigente | (se elimina) | se registra el estado final |
 | 11 | cualquiera | evento que no corresponde (ACK con otro serial, duplicado, entrada repetida, `geofenceId` distinto de 0) | sin cambio | se ignora; log `debug` |
@@ -152,6 +152,8 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 - Cada trama: `decodeFrame` → `parseMessage` (003), en orden de `receivedAt`. `unknown` se ignora. Un `ack` se compara con el serial del paso; un `zoneEvent` solo cuenta si `geofenceId = 0` (zona de las rutas con orden).
 - **El cursor se guarda solo después de aplicar con éxito todas las tramas del lote.** Si aplicar una falla (p. ej. `getPlan` en la fila 7), el cursor no avanza y el lote se reaplica en el siguiente recorrido; como las transiciones dependen del estado, lo ya aplicado se ignora (fila 11) y lo pendiente se completa.
 - Las alertas del lector las conecta el arranque (spec 006).
+- La partición de `tbl_cadena` es única para todo el servicio (spec 001); `chain_partition_selected` registra su elección. La lectura de la partición anterior durante el corte semanal usa la misma cola y el mismo limitador, y cada consulta cuenta en `chain_poll_summary.queries`.
+- Un cursor heredado con `cursor.partition > weekLabel(ahora)` se repara antes de leer. El ancla es `firstTransmissionAt` del paso; si falta y está en `AWAITING_ACK`, se usa `ackDeadline − ackRetryBackoffMs`; `startedAt` se admite solo para `stepSeq = 0`. Con ancla válida se reancla la lectura a su semana (si está en el catálogo) y se registra `chain_cursor_reset` con `anchor: 'transmission'`. Sin ancla utilizable se llama a `initCursor` en la partición calculada, no se entregan tramas en ese turno y se registra `anchor: 'init'`. Nunca se usa `startedAt` en pasos posteriores. El cursor corregido se persiste solo después de aplicar con éxito el lote.
 - No se registra `chain_poll` por consulta. Cada minuto se registra `chain_poll_summary` (`info`) con `devices`, `queries`, `rows`, `avgDurationMs`, `maxDurationMs`, `maxLagMs`, `throttledMs` y `effectiveIntervalMs`. `queries` cuenta intentos SQL a particiones; `rows` cuenta sus filas devueltas. `maxLagMs` es el mayor rezago de las tramas procesadas, o `null` si no hubo tramas.
 
 ## Polling de asignaciones
@@ -214,6 +216,8 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 - [ ] Treinta rutas simultáneas limitan todas las consultas SQL de `initCursor`, incluso cuando cada llamada hace dos; `readNew` con cambio de partición y `hasMore` respeta el mismo tope.
 - [ ] Tras fallos consecutivos el espaciado se duplica hasta 10 s y vuelve al normal tras un éxito; un equipo nuevo tiene turno inmediato y el sondeo de asignaciones avanza mientras la cola está saturada.
 - [ ] `chain_poll_summary` aparece una vez por minuto con todos sus campos y no existe `chain_poll` por consulta.
+- [ ] En la ventana doble las consultas adicionales pasan por `ChainQueryLimiter` y se cuentan en `chain_poll_summary.queries` sin rebasar `chainMaxQueriesPerSecond`.
+- [ ] Un cursor futuro heredado usa primero `firstTransmissionAt`, luego `ackDeadline − ackRetryBackoffMs` en `AWAITING_ACK`, y `startedAt` solo en el paso 0; sin ancla utilizable usa `initCursor`, entrega cero tramas en el turno y registra `chain_cursor_reset` con `anchor: 'init'`.
 - [ ] Con `opts.dryRun = true` (mismo `COMMAND_DRY_RUN` que recibe el gateway desde 006) se llega a `AWAITING_ACK` sin temporizador, retransmisión ni avisos de lote, también tras reiniciar. Con `opts.dryRun = false` se retransmite según la política normal.
 - [ ] La lógica de transición es testeable sin BullMQ, Redis ni red (principio III).
 - [ ] Las pruebas usan fakes de 001, 005 y 007, el `Scheduler` falso con tiempo controlado, los módulos reales de 003 y Redis en memoria; no hay BD local.

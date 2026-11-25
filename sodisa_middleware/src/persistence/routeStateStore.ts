@@ -72,7 +72,8 @@ export class RedisRouteStateStore implements RouteStateStore {
   private parse(key: string, value: string): RouteState {
     try {
       const parsed = JSON.parse(value) as RouteState;
-      return { ...parsed, lastAcceptedCommand: parsed.lastAcceptedCommand ?? null };
+      return { ...parsed, lastAcceptedCommand: parsed.lastAcceptedCommand ?? null,
+        firstTransmissionAt: parsed.firstTransmissionAt ?? null };
     }
     catch (error) { throw new CorruptStateError(key, { cause: error }); }
   }

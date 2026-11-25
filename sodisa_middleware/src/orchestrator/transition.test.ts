@@ -9,7 +9,7 @@ const base: RouteState = {
   model: 'GV300W', catalogRouteId: 17, routeType: 0, fsmState: 'CONFIGURING',
   currentPointId: 3, completedPointIds: [], stepSeq: 0, transmissionSeq: 1, retryCount: 0,
   pendingRequest: { idempotencyKey: '42-0-1', body: { companyId: 2, unitId: '81', comando: 'AT+GTGEO$' } },
-  lastAcceptedCommand: null,
+  lastAcceptedCommand: null, firstTransmissionAt: null,
   ackDeadline: null, closing: null, startedAt: '2026-11-17T00:00:00Z', updatedAt: '2026-11-17T00:00:00Z',
 };
 
@@ -18,6 +18,16 @@ test('serial hexadecimal de cuatro dígitos', () => {
   expect(serialFor(255)).toBe('00FF');
   expect(serialFor(65535)).toBe('FFFF');
   expect(() => serialFor(65536)).toThrow();
+});
+
+test('la primera transmisión se conserva al retransmitir y se limpia al cambiar de paso', () => {
+  const sent = { ...base, firstTransmissionAt: '2026-11-17T00:00:00Z', fsmState: 'AWAITING_ACK' as const,
+    pendingRequest: null, ackDeadline: new Date(1000).toISOString() };
+  expect(transition(sent, { kind: 'ACK_DEADLINE', at: 1000, backoffMs: 60000, resend: true, dryRun: false })
+    .state?.firstTransmissionAt).toBe(sent.firstTransmissionAt);
+  const zone = { ...sent, fsmState: 'IN_ZONE' as const };
+  expect(transition(zone, { kind: 'EXIT', geofenceId: 0, nextPointId: 5 }).state?.firstTransmissionAt).toBeNull();
+  expect(transition(zone, { kind: 'ASSIGNMENT_ENDED', finalEstado: 5 }).state?.firstTransmissionAt).toBeNull();
 });
 
 test('ACCEPTED programa ventana; dryRun no la programa', () => {

@@ -6,7 +6,8 @@ import { KeyedMutex } from './keyedMutex';
 import type { StepRunner } from './stepRunner';
 
 function fixture(count: number, rate = 3) {
-  let time = 0;
+  const start = Date.parse('2026-11-24T12:00:00Z');
+  let time = start;
   const states = new Map<number, RouteState>();
   const cursors = new Map<number, ChainCursor>();
   const timestamps = new Map<number, number[]>();
@@ -17,7 +18,7 @@ function fixture(count: number, rate = 3) {
     states.set(id, { assignmentId: id, companyId: 364, apiCompanyId: 2, unitId: id, deviceId,
       model: 'GV300W', catalogRouteId: 17, routeType: 0, fsmState: 'AWAITING_ACK', currentPointId: 1,
       completedPointIds: [], stepSeq: 0, transmissionSeq: 1, retryCount: 0, pendingRequest: null,
-      lastAcceptedCommand: null, ackDeadline: null, closing: null, startedAt: '', updatedAt: '' });
+      lastAcceptedCommand: null, firstTransmissionAt: null, ackDeadline: null, closing: null, startedAt: '', updatedAt: '' });
     cursors.set(deviceId, cursor);
     timestamps.set(deviceId, []);
   };
@@ -43,7 +44,7 @@ function fixture(count: number, rate = 3) {
     detectors: { assignments: { listVigentes: async () => [], getById: async () => null },
       chains: { initCursor: async () => cursor,
         readNew: async (deviceId: number, current: ChainCursor) => {
-          await limiter.run(async () => { timestamps.get(deviceId)!.push(time); return { rows: [] }; });
+          await limiter.run(async () => { timestamps.get(deviceId)!.push(time - start); return { rows: [] }; });
           const hasMore = hasMoreOnce.delete(deviceId);
           return { frames: [], cursor: current, hasMore };
         } } },
@@ -53,7 +54,7 @@ function fixture(count: number, rate = 3) {
       onTask: jest.fn(), close: jest.fn() },
   } as unknown as OrchestratorDeps;
   const poller = new ChainPoller(deps, opts, new Map(), {} as StepRunner, new KeyedMutex());
-  return { add, poller, timestamps, logger, limiter, setTime: (value: number) => { time = value; },
+  return { add, poller, timestamps, logger, limiter, setTime: (value: number) => { time = start + value; },
     setHasMoreOnce: (id: number) => { hasMoreOnce.add(id); } };
 }
 

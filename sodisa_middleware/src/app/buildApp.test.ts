@@ -84,7 +84,9 @@ test('arranca en orden, cablea el mismo dryRun y las alertas, y oculta secretos'
   expect(result.kind).toBe('DRY_RUN');
   const readerOptions = jest.mocked(createChainReader).mock.calls[0][1];
   readerOptions.onAlert?.({ code: 'PARTITION_UNREADABLE', partition: '202645', message: 'Sin permiso.' });
+  readerOptions.onPartitionSelected?.({ partition: '202647', computed: '202647', fallback: false });
   expect(h.logger.warn).toHaveBeenCalledWith('chain_alert', expect.objectContaining({ code: 'PARTITION_UNREADABLE' }));
+  expect(h.logger.info).toHaveBeenCalledWith('chain_partition_selected', expect.objectContaining({ partition: '202647', fallback: false }));
   expect(h.logger.warn).toHaveBeenCalledWith('shadow_mode_active', expect.any(Object));
   const logs = JSON.stringify([jest.mocked(h.logger.info).mock.calls, jest.mocked(h.logger.warn).mock.calls]);
   expect(logs).not.toContain('<valor-api>');
@@ -205,6 +207,8 @@ test('avisa si la ventana ACK es demasiado corta y registra las opciones nuevas'
   expect(h.logger.info).toHaveBeenCalledWith('startup_config', expect.objectContaining({
     config: expect.objectContaining({ chainPollIntervalMs: 60_000, chainMaxQueriesPerSecond: 3 }),
   }));
+  const startup = jest.mocked(h.logger.info).mock.calls.find(([event]) => event === 'startup_config')?.[1];
+  expect(startup?.config).not.toHaveProperty('partitionRefreshMs');
   await app.shutdown('test');
   const normal = fixture();
   const normalApp = buildApp(normal.config, normal.logger, normal.factories);

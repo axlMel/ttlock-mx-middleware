@@ -8,7 +8,7 @@ export function transition(state: RouteState, event: TransitionEvent): Transitio
     if (state.fsmState === 'COMPLETED' || (state.stepSeq < 1 && state.transmissionSeq < 1)) return { state: null, effects: ['CANCEL_TIMERS', 'DELETE'] };
     if (state.closing?.reason === 'ASSIGNMENT_ENDED') return ignored();
     return { state: { ...state, fsmState: 'PENDING', currentPointId: null, closing: { reason: 'ASSIGNMENT_ENDED', finalEstado: event.finalEstado },
-      stepSeq: state.stepSeq + 1, transmissionSeq: 0, retryCount: 0, pendingRequest: null, lastAcceptedCommand: null, ackDeadline: null }, effects: ['CANCEL_TIMERS', 'TRANSMIT'] };
+      stepSeq: state.stepSeq + 1, transmissionSeq: 0, retryCount: 0, pendingRequest: null, lastAcceptedCommand: null, firstTransmissionAt: null, ackDeadline: null }, effects: ['CANCEL_TIMERS', 'TRANSMIT'] };
   }
   if (event.kind === 'GATEWAY_ACCEPTED') {
     if (state.fsmState !== 'CONFIGURING') return ignored();
@@ -32,7 +32,7 @@ export function transition(state: RouteState, event: TransitionEvent): Transitio
     const completedPointIds = [...state.completedPointIds, state.currentPointId];
     return { state: { ...state, fsmState: 'PENDING', completedPointIds, currentPointId: event.nextPointId,
       closing: event.nextPointId === null ? { reason: 'ROUTE_DONE', finalEstado: null } : null,
-      stepSeq: state.stepSeq + 1, transmissionSeq: 0, retryCount: 0, pendingRequest: null, lastAcceptedCommand: null, ackDeadline: null }, effects: ['TRANSMIT'] };
+      stepSeq: state.stepSeq + 1, transmissionSeq: 0, retryCount: 0, pendingRequest: null, lastAcceptedCommand: null, firstTransmissionAt: null, ackDeadline: null }, effects: ['TRANSMIT'] };
   }
   if (event.kind === 'ACK_DEADLINE') {
     if (state.fsmState !== 'AWAITING_ACK' || event.dryRun || !state.ackDeadline || Date.parse(state.ackDeadline) > event.at) return ignored();
