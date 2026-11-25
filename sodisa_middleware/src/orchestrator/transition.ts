@@ -28,7 +28,9 @@ export function transition(state: RouteState, event: TransitionEvent): Transitio
     return { state: { ...state, fsmState: 'AWAITING_EXIT_ALERT' }, effects: [] };
   }
   if (event.kind === 'EXIT') {
-    if (event.geofenceId !== 0 || (state.fsmState !== 'IN_ZONE' && state.fsmState !== 'AWAITING_EXIT_ALERT') || state.currentPointId === null) return ignored();
+    if (event.geofenceId !== 0 || state.currentPointId === null) return ignored();
+    if (state.fsmState === 'IN_ZONE') return { state, effects: ['EXIT_BEFORE_ENTER_IGNORED'] };
+    if (state.fsmState !== 'AWAITING_EXIT_ALERT') return ignored();
     const completedPointIds = [...state.completedPointIds, state.currentPointId];
     return { state: { ...state, fsmState: 'PENDING', completedPointIds, currentPointId: event.nextPointId,
       closing: event.nextPointId === null ? { reason: 'ROUTE_DONE', finalEstado: null } : null,

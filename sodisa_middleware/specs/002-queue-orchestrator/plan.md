@@ -19,6 +19,7 @@
 15. **Inicio independiente.** Las inicializaciones de cursor se ejecutan como trabajo pendiente por asignación, con reserva de unidad para evitar duplicados. `assignmentCycle.run()` no espera el turno SQL; el primer sondeo de tramas se inicia sin bloquear el ciclo de asignaciones. Al terminar la espera se vuelve a comprobar la vigencia antes de transmitir. `stop()` cancela esperas pendientes y espera la consulta en vuelo.
 16. **Registro agregado.** El poller emite `chain_poll_summary` cada minuto con las métricas del limitador, rezago y equipos; `chain_poll_saturated` se limita a un aviso por minuto. `effectiveIntervalMs` es el máximo entre el objetivo por equipo y el tiempo requerido por la carga al tope configurado.
 17. **Partición semanal y cursores futuros.** 001 conserva marcas independientes por partición (004) y usa el limitador compartido. Antes de leer un cursor futuro heredado, el poller lo reancla a la primera transmisión persistida del paso; en estados antiguos `AWAITING_ACK` deriva `ackDeadline − backoff`, o usa `startedAt` solo en paso 0. Sin ancla segura hace `initCursor` y no procesa frames en ese turno; registra `chain_cursor_reset` sin secretos. El cursor se guarda tras aplicar el lote.
+18. **Entrada previa obligatoria.** La transición pura conserva `IN_ZONE` ante `EXIT` y devuelve un efecto específico de salida prematura. El ejecutor evita `getPlan` para ese evento y registra el efecto a nivel `info`. Solo `AWAITING_EXIT_ALERT` permite consultar el siguiente punto y avanzar. No hay migración del estado persistido.
 
 ## Estructura
 ```
@@ -26,7 +27,7 @@ src/orchestrator/
   types.ts            interfaces de la spec, Event, Effect, StepTask
   serial.ts
   keyedMutex.ts
-  transition.ts       funciones puras (filas 3-11 y avance de paso)
+  transition.ts       funciones puras (filas 3-12 y avance de paso)
   stepRunner.ts       transmisión por la API, repetición, retransmisión
   assignmentCycle.ts  polling de asignaciones, inicio y cierre
   chainPoller.ts      polling de tramas y aplicación de eventos
@@ -48,7 +49,9 @@ Enmienda de carga: actualizar contratos de 002/006 → limitador SQL compartido 
 
 Enmienda de particiones: marcas de 004 y selección de 001 → conservar el limitador en la ventana doble → reparar cursores futuros desde la transmisión del paso → pruebas de reinicio, registro y ausencia de ACK histórico.
 
+Enmienda de entrada previa: actualizar la spec y T2 → limitar la fila 7 y añadir la fila 12 → evitar la consulta de plan para salidas prematuras → probar transición pura, lote mixto, tramas reales y reinicio → lint, build, tests y commit.
+
 ## Riesgos
 - El traductor de `jobId` tiene prueba unitaria. El adaptador completo de BullMQ queda sin prueba de integración automática porque Redis en memoria no soporta sus scripts; se verifica en el despliegue sombra.
-- Una salida duplicada o tardía puede completar el siguiente punto (limitación conocida, `docs/architecture.md` §10).
+- Una salida sin entrada en el paso ya no cuenta. Una salida duplicada o tardía puede completar el siguiente punto si ya hubo una entrada en él (limitación conocida, `docs/architecture.md` §10).
 - Si el estado de Redis se pierde, las rutas en curso se reinician desde el primer punto: Redis debe correr con `appendonly yes` y `noeviction`.

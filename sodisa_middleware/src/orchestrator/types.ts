@@ -40,5 +40,5 @@ export type TransitionEvent =
   | { kind: 'EXIT'; geofenceId: number; nextPointId: number | null }
   | { kind: 'ACK_DEADLINE'; at: number; backoffMs: number; resend: boolean; dryRun: boolean }
   | { kind: 'ASSIGNMENT_ENDED'; finalEstado: number | null };
-export type TransitionEffect = 'SCHEDULE_ACK' | 'CANCEL_TIMERS' | 'TRANSMIT' | 'DELETE' | 'DEBUG';
+export type TransitionEffect = 'SCHEDULE_ACK' | 'CANCEL_TIMERS' | 'TRANSMIT' | 'DELETE' | 'DEBUG' | 'EXIT_BEFORE_ENTER_IGNORED';
 export interface TransitionResult { state: RouteState | null; effects: TransitionEffect[] }

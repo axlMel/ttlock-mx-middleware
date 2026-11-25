@@ -12,6 +12,7 @@ import { FakeScheduler } from './scheduler';
 import { StepRunner } from './stepRunner';
 import { createChainQueryLimiter } from './chainQueryLimiter';
 import type { OrchestratorDeps, OrchestratorOptions } from './types';
+import { route2035162Frames } from './__fixtures__/route2035162';
 
 const ack = (serial: string): string => `+ACK:GTGEO,270D04,863457050476769,,0,${serial},20260921220939,03C8`;
 const enter = '+RESP:GTGEO,270D04,863457050476769,,,01,1,1,0.0,0,2257.0,-99.127905,19.355447,20260921220959,0334,0020,0336,8F3D,00,0.2,20260921220959,03C9';
@@ -89,8 +90,8 @@ function setup(dryRun = false) {
     setPlan: (value: RoutePlan) => { plan = value; }, setPlanFails: (value: boolean) => { planFails = value; },
     setGatewayResult: (value: GatewayResult) => { gatewayResult = value; },
     setBatchLimit: (value: number) => { batchLimit = value; },
-    frame: (raw: string) => { frames.push({ frameId: nextFrameId++, deviceId: 9001,
-      receivedAt: '2026-11-17 12:00:00', raw: Buffer.from(raw, 'latin1') }); },
+    frame: (raw: string, receivedAt = '2026-11-17 12:00:00') => { frames.push({ frameId: nextFrameId++, deviceId: 9001,
+      receivedAt, raw: Buffer.from(raw, 'latin1') }); },
     advance: async (ms: number) => { time += ms; await scheduler.advance(ms); },
   };
 }
@@ -105,6 +106,7 @@ test('ruta de dos puntos llega a COMPLETED con reset y seriales sucesivos', asyn
     h.frame(exit); await h.pollChains();
     expect(h.sent[1].command).toContain(',0001$');
     h.frame(ack('0001')); await h.pollChains();
+    h.frame(enter); await h.pollChains();
     h.frame(exit); await h.pollChains();
     expect(h.sent[2].command).toContain(',0,0.000000,0.000000,50,');
     h.frame(ack('0002')); await h.pollChains();
@@ -113,6 +115,101 @@ test('ruta de dos puntos llega a COMPLETED con reset y seriales sucesivos', asyn
     await h.runAssignments();
     expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
     expect(h.sent).toHaveLength(3);
+  } finally { h.redis.disconnect(); }
+});
+
+test('ACK, salida, entrada y salida en un mismo lote solo avanzan tras la entrada', async () => {
+  const h = setup();
+  try {
+    await h.runAssignments();
+    h.deps.logger.info = jest.fn();
+    const getPlan = jest.spyOn(h.deps.catalog.plans, 'getPlan');
+    h.frame(ack('0000'), '2026-11-17 12:00:01');
+    h.frame(exit, '2026-11-17 12:00:02');
+    h.frame(enter, '2026-11-17 12:00:03');
+    h.frame(exit, '2026-11-17 12:00:04');
+    await h.pollChains();
+    expect((await h.routeStates.get(42))).toMatchObject({ stepSeq: 1, currentPointId: 2, fsmState: 'AWAITING_ACK' });
+    expect(getPlan).toHaveBeenCalledTimes(1);
+    expect(h.deps.logger.info).toHaveBeenCalledWith('exit_before_enter_ignored', expect.objectContaining({
+      deviceId: 9001, routeId: 42, stepSeq: 0,
+    }));
+    expect(h.sent).toHaveLength(2);
+  } finally { h.redis.disconnect(); }
+});
+
+test('ACK, salida, entrada y salida en sondeos separados conservan el orden del paso', async () => {
+  const h = setup();
+  try {
+    await h.runAssignments();
+    const getPlan = jest.spyOn(h.deps.catalog.plans, 'getPlan');
+    h.frame(ack('0000')); await h.pollChains();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
+    h.frame(exit); await h.pollChains();
+    expect((await h.routeStates.get(42))).toMatchObject({ fsmState: 'IN_ZONE', stepSeq: 0, currentPointId: 1 });
+    expect(getPlan).not.toHaveBeenCalled();
+    h.frame(enter); await h.pollChains();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_EXIT_ALERT');
+    h.frame(exit); await h.pollChains();
+    expect((await h.routeStates.get(42))).toMatchObject({ fsmState: 'AWAITING_ACK', stepSeq: 1, currentPointId: 2 });
+    expect(getPlan).toHaveBeenCalledTimes(1);
+  } finally { h.redis.disconnect(); }
+});
+
+test('entrada antes del ACK no habilita la salida del paso', async () => {
+  const h = setup();
+  try {
+    await h.runAssignments();
+    const getPlan = jest.spyOn(h.deps.catalog.plans, 'getPlan');
+    h.frame(enter, '2026-11-17 12:00:01');
+    h.frame(ack('0000'), '2026-11-17 12:00:02');
+    h.frame(exit, '2026-11-17 12:00:03');
+    await h.pollChains();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
+    expect(getPlan).not.toHaveBeenCalled();
+    expect(h.sent).toHaveLength(1);
+  } finally { h.redis.disconnect(); }
+});
+
+test('tramas físicas de 2035162 no saltan los puntos 2 y 3', async () => {
+  const h = setup();
+  try {
+    await h.runAssignments();
+    h.frame(route2035162Frames[0].raw, route2035162Frames[0].receivedAt);
+    await h.pollChains();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
+    h.frame(route2035162Frames[1].raw, route2035162Frames[1].receivedAt);
+    await h.pollChains();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_EXIT_ALERT');
+    h.frame(route2035162Frames[2].raw, route2035162Frames[2].receivedAt);
+    await h.pollChains();
+    expect((await h.routeStates.get(42))).toMatchObject({ stepSeq: 1, currentPointId: 2, fsmState: 'AWAITING_ACK' });
+    const getPlan = jest.spyOn(h.deps.catalog.plans, 'getPlan');
+    h.deps.logger.info = jest.fn();
+    for (const frame of route2035162Frames.slice(3)) h.frame(frame.raw, frame.receivedAt);
+    await h.pollChains();
+    expect((await h.routeStates.get(42))).toMatchObject({ stepSeq: 1, currentPointId: 2, fsmState: 'IN_ZONE' });
+    expect(h.sent).toHaveLength(2);
+    expect(getPlan).not.toHaveBeenCalled();
+    expect(jest.mocked(h.deps.logger.info).mock.calls.filter(([event]) => event === 'exit_before_enter_ignored')).toHaveLength(2);
+  } finally { h.redis.disconnect(); }
+});
+
+test('ruta reanudada en IN_ZONE exige entrada antes de aceptar salida', async () => {
+  const h = setup();
+  try {
+    await h.runAssignments();
+    h.frame(ack('0000')); await h.pollChains();
+    const resumed = new ChainPoller(h.deps, h.opts, new Map([[81, 42]]), h.runner, new KeyedMutex());
+    const getPlan = jest.spyOn(h.deps.catalog.plans, 'getPlan');
+    h.deps.logger.info = jest.fn();
+    h.frame(exit); await resumed.run();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
+    expect(getPlan).not.toHaveBeenCalled();
+    expect(h.deps.logger.info).toHaveBeenCalledWith('exit_before_enter_ignored', expect.objectContaining({ stepSeq: 0 }));
+    await h.advance(60_000);
+    h.frame(enter); h.frame(exit); await resumed.run();
+    expect((await h.routeStates.get(42))?.stepSeq).toBe(1);
   } finally { h.redis.disconnect(); }
 });
 
@@ -180,11 +277,12 @@ test('si getPlan falla al salir, el cursor conserva la trama y la aplica luego',
   try {
     await h.runAssignments();
     h.frame(ack('0000')); await h.pollChains();
+    h.frame(enter); await h.pollChains();
     const before = await h.cursors.get(9001);
     h.frame(exit);
     h.setPlanFails(true); await h.pollChains();
     expect(await h.cursors.get(9001)).toEqual(before);
-    expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_EXIT_ALERT');
     h.setPlanFails(false); await h.pollChains();
     expect((await h.routeStates.get(42))?.currentPointId).toBe(2);
     expect(h.sent).toHaveLength(2);
@@ -472,6 +570,7 @@ test('el siguiente paso usa el primer punto no cumplido del plan actualizado', a
   try {
     await h.runAssignments();
     h.frame(ack('0000')); await h.pollChains();
+    h.frame(enter); await h.pollChains();
     h.setPlan({ routeType: 0, points: [point(1, -99), point(3, -98), point(2, -97)] });
     h.frame(exit); await h.pollChains();
     expect((await h.routeStates.get(42))?.currentPointId).toBe(3);

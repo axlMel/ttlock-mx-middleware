@@ -1,7 +1,7 @@
 # Tasks 002 — Orquestador
 
 - [x] **T1. Tipos y serial.** `types.ts` (interfaces de la spec, eventos, efectos, `StepTask`) y `serial.ts` con prueba (0 → `0000`, 255 → `00FF`, mayúsculas).
-- [x] **T2. Transiciones puras.** `transition.ts`: filas 3 a 11 y avance de paso (siguiente punto no cumplido, paso de reset, `closing`). Una prueba por fila y por rama (incluidas: ACK de otro serial, duplicado, salida sin entrada, `geofenceId` distinto de 0, plan con puntos agregados o eliminados).
+- [x] **T2. Transiciones puras.** `transition.ts`: filas 3 a 12 y avance de paso (siguiente punto no cumplido, paso de reset, `closing`). Una prueba por fila y por rama (incluidas: ACK de otro serial, duplicado, salida sin entrada ignorada, `geofenceId` distinto de 0, plan con puntos agregados o eliminados).
 - [x] **T3. Scheduler y exclusión.** Interfaz y `FakeScheduler` con tiempo controlado; `keyedMutex.ts` con prueba de no solapamiento por `assignmentId`.
 - [x] **T4. Transmisión.** `stepRunner.ts`: `pendingRequest` antes de llamar, clave `{assignmentId}-{stepSeq}-{transmissionSeq}`, resultados del gateway (ACCEPTED, DRY_RUN, UNCERTAIN, UNAVAILABLE, DEFINITIVE_ERROR, `AuditUnavailableError`), repetición con la misma clave y JSON, retransmisión por ventana vencida con clave nueva, avisos de lote, `ackResendEnabled`.
 - [x] **T5. Asignaciones.** `assignmentCycle.ts`: inicio (ventana, empresa, unidad única, `routeType` 1 con alerta única), cierre por no vigencia (filas 8 y 10 con `getById`), espaciado adaptativo.
@@ -18,3 +18,4 @@
 - [x] **T16. Independencia y registros.** Inicios de ruta pendientes sin bloquear asignaciones, vigencia al transmitir, parada ordenada, `chain_poll_saturated` y `chain_poll_summary` por minuto; pruebas de fallos, rezago y ausencia de `chain_poll`.
 - [x] **T17. Cierre de enmienda.** `npm run lint`, `npm run build`, `npm test`, revisión de referencias antiguas y commit. Conservar `AGENTS.md` y `legacy/` intactos.
 - [x] **T18. Particiones y recuperación.** Mantener el limitador y métricas en la ventana doble; guardar primera transmisión por paso, limpiar al avanzar; reparar cursores futuros con ancla segura o `initCursor`, alertar y probar pasos posteriores sin releer salidas antiguas.
+- [x] **T19. Entrada antes de salida.** Limitar EXIT a `AWAITING_EXIT_ALERT`, registrar la salida prematura sin releer el plan y probar secuencias, lote único, tramas físicas, reinicio y reset; ejecutar lint, build y tests, y hacer commit.

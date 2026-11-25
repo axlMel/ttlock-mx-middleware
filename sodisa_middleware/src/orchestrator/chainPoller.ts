@@ -100,15 +100,20 @@ export class ChainPoller {
         else if (parsed.event === 'enter') event = { kind: 'ENTER' as const, geofenceId: parsed.geofenceId };
         else {
           if (parsed.geofenceId !== 0 || (current.fsmState !== 'IN_ZONE' && current.fsmState !== 'AWAITING_EXIT_ALERT')) continue;
-          const plan = await this.deps.catalog.plans.getPlan(current.companyId, current.catalogRouteId, { forceFresh: true });
-          const done = new Set([...current.completedPointIds, current.currentPointId]);
-          const next = plan.points.find((point) => !done.has(point.pointId));
-          event = { kind: 'EXIT' as const, geofenceId: parsed.geofenceId, nextPointId: next?.pointId ?? null };
+          if (current.fsmState === 'IN_ZONE') event = { kind: 'EXIT' as const, geofenceId: parsed.geofenceId, nextPointId: null };
+          else {
+            const plan = await this.deps.catalog.plans.getPlan(current.companyId, current.catalogRouteId, { forceFresh: true });
+            const done = new Set([...current.completedPointIds, current.currentPointId]);
+            const next = plan.points.find((point) => !done.has(point.pointId));
+            event = { kind: 'EXIT' as const, geofenceId: parsed.geofenceId, nextPointId: next?.pointId ?? null };
+          }
         }
         const next = transition(current, event);
         if (next.state === current) {
-          this.deps.logger.debug('frame_ignored', { timestamp: new Date(this.now()).toISOString(),
-            deviceId: current.deviceId, routeId: current.assignmentId });
+          const fields = { timestamp: new Date(this.now()).toISOString(),
+            deviceId: current.deviceId, routeId: current.assignmentId, stepSeq: current.stepSeq };
+          if (next.effects.includes('EXIT_BEFORE_ENTER_IGNORED')) this.deps.logger.info('exit_before_enter_ignored', fields);
+          else this.deps.logger.debug('frame_ignored', fields);
           continue;
         }
         if (next.state) await this.deps.routeStates.set({ ...next.state, updatedAt: new Date(this.now()).toISOString() });

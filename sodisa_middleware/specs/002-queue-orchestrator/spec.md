@@ -4,13 +4,13 @@
 
 ## Objetivo
 Avanzar cada asignación vigente: iniciarla cuando corresponda, configurar el punto actual en el equipo
-(vía la API de comandos), confirmar su ACK, detectar la salida de zona, pasar al siguiente punto y
+(vía la API de comandos), confirmar su ACK, detectar la entrada y la salida de zona, pasar al siguiente punto y
 cerrar la ruta desactivando la zona.
 
 ## Principio rector
 Este middleware corre sin interfaz ni operador. Por eso:
 - **Nunca se rinde:** un comando sin ACK se retransmite indefinidamente. No existe estado `FAILED` ni pausa para operador.
-- **Nunca salta un punto:** avanza solo tras el ACK y la salida de zona del punto actual.
+- **Nunca salta un punto:** avanza solo tras el ACK, la entrada y la salida de zona del punto actual.
 - **Nunca se detiene por un error:** un fallo en un equipo, en la API o en una consulta se registra y no afecta a otros equipos ni al siguiente ciclo.
 
 ## Módulos que usa
@@ -80,7 +80,7 @@ Todo se exporta desde `src/orchestrator/index.ts`; es lo único que otros módul
 | `PENDING` | El paso actual aún no se ha transmitido. |
 | `CONFIGURING` | Se está transmitiendo el comando del paso actual a la API. |
 | `AWAITING_ACK` | La API aceptó la transmisión; se espera el ACK del equipo. |
-| `IN_ZONE` | ACK recibido; zona activa; se espera entrada o salida. |
+| `IN_ZONE` | ACK recibido; zona activa; se espera la entrada. Una salida en este estado se ignora. |
 | `AWAITING_EXIT_ALERT` | Entrada registrada; se espera la salida. |
 | `COMPLETED` | Ruta terminada y zona desactivada (ACK del reset). |
 
@@ -96,15 +96,16 @@ Comandos: punto → `buildGeoCommand` con modo 3 (entra y sale), zona 0 y los da
 | 3 | `CONFIGURING` | gateway `ACCEPTED` o `DRY_RUN` | `AWAITING_ACK` | se guarda `lastAcceptedCommand` con el comando del paso y se limpia `pendingRequest`; con `opts.dryRun = false`, `ackDeadline = ahora + ackRetryBackoffMs` y se programa `ACK_DEADLINE`; con `opts.dryRun = true`, `ackDeadline = null` y no se programa |
 | 4 | `CONFIGURING` (con `pendingRequest`) o `AWAITING_ACK` | `ack` con el serial del paso | `IN_ZONE`, o fila 9 si es el paso de reset | se descartan `pendingRequest` y `lastAcceptedCommand`; se cancelan temporizadores del paso |
 | 5 | `AWAITING_ACK` | `ackDeadline` vencido sin ACK | `CONFIGURING` | `transmissionSeq + 1`, `retryCount + 1`, clave nueva (ver "Retransmisión") |
-| 6 | `IN_ZONE` | `zoneEvent` entrada | `AWAITING_EXIT_ALERT` | informativo |
-| 7 | `IN_ZONE` o `AWAITING_EXIT_ALERT` | `zoneEvent` salida | `PENDING` | `currentPointId` pasa a `completedPointIds`; se relee el plan con `forceFresh`; el siguiente es el primer punto no cumplido; si no hay, el paso de reset con `closing = ROUTE_DONE`; `stepSeq + 1`, `transmissionSeq = 0`, `retryCount = 0`, `lastAcceptedCommand = null`, `firstTransmissionAt = null` |
+| 6 | `IN_ZONE` | `zoneEvent` entrada | `AWAITING_EXIT_ALERT` | se registra la entrada |
+| 7 | `AWAITING_EXIT_ALERT` | `zoneEvent` salida | `PENDING` | `currentPointId` pasa a `completedPointIds`; se relee el plan con `forceFresh`; el siguiente es el primer punto no cumplido; si no hay, el paso de reset con `closing = ROUTE_DONE`; `stepSeq + 1`, `transmissionSeq = 0`, `retryCount = 0`, `lastAcceptedCommand = null`, `firstTransmissionAt = null` |
 | 8 | cualquiera excepto `COMPLETED` | la asignación deja de ser vigente | `PENDING` (paso de reset) | si hubo transmisión: `closing = ASSIGNMENT_ENDED` con el estado final, `stepSeq + 1`, `transmissionSeq = 0`, `retryCount = 0`, `pendingRequest = null`, `lastAcceptedCommand = null`, `firstTransmissionAt = null`, se cancelan temporizadores; si no hubo ninguna, se elimina el estado |
 | 9 | `AWAITING_ACK` o `CONFIGURING` (paso de reset) | `ack` del reset | `COMPLETED` si `closing = ROUTE_DONE`; se elimina el estado si `ASSIGNMENT_ENDED` | |
 | 10 | `COMPLETED` | la asignación deja de ser vigente | (se elimina) | se registra el estado final |
 | 11 | cualquiera | evento que no corresponde (ACK con otro serial, duplicado, entrada repetida, `geofenceId` distinto de 0) | sin cambio | se ignora; log `debug` |
+| 12 | `IN_ZONE` | `zoneEvent` salida (sin entrada previa en el paso) | sin cambio | se ignora; log `exit_before_enter_ignored` (nivel `info`) con `deviceId`, `routeId` y `stepSeq` |
 
 - “Hubo transmisión” ⇔ `stepSeq >= 1` o `transmissionSeq >= 1`.
-- La salida se acepta desde `IN_ZONE` aunque no se haya visto la entrada.
+- La salida solo se acepta desde `AWAITING_EXIT_ALERT`, es decir, después de una entrada registrada en el mismo paso. Una salida recibida en `IN_ZONE` se ignora (fila 12). Una entrada recibida en `AWAITING_ACK` se ignora (fila 11): puede pertenecer a la configuración anterior del equipo.
 - `COMPLETED` se conserva mientras la asignación siga vigente, para no reiniciar la ruta.
 - Cada transición se persiste en `RouteState` **antes** del siguiente efecto (llamada a la API, programación).
 - Si al releer el plan (fila 7) falla `getPlan`, la salida **no se consume**: ver "Lectura de tramas".
@@ -209,7 +210,12 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 - [ ] Una ruta en curso cuya asignación pasa de 3 a 4 conserva su `RouteState`, su `stepSeq` y sus temporizadores: no hay reset ni segundo hilo.
 - [ ] El reset de cierre por asignación no vigente se retransmite si falta su ACK, aunque `isActiveAssignment` sea falso.
 - [ ] Un equipo que nunca responde no bloquea a otro; dos eventos de la misma asignación no se procesan en paralelo.
-- [ ] Una salida se acepta desde `IN_ZONE` sin entrada previa.
+- [ ] Una salida en `IN_ZONE` conserva el estado y el paso, no relee el plan y registra `exit_before_enter_ignored` con `deviceId`, `routeId` y `stepSeq`.
+- [ ] ACK → salida → entrada → salida: solo la segunda salida avanza; el resultado es igual si las cuatro tramas llegan en un mismo lote.
+- [ ] Una entrada en `AWAITING_ACK` no habilita la salida; una entrada repetida en `AWAITING_EXIT_ALERT` se ignora.
+- [ ] El ACK del reset completa la ruta sin entrada ni salida previas.
+- [ ] Con las tramas reales de la ruta 2035162, el paso 0 avanza tras entrada y salida; las salidas de 16:36:54 y 16:37:53 en el paso 1 se ignoran y no se transmite el paso 2 ni el reset.
+- [ ] Una ruta reanudada en `IN_ZONE` exige una entrada antes de aceptar la salida.
 - [ ] El polling de tramas solo consulta equipos en espera, sin rebasar el tope por segundo, y se pone al día con `hasMore` sin ráfagas.
 - [ ] Con 60 equipos e intervalo de 60 s, en 10 minutos cada uno se consulta 10 veces (±1); ninguna ventana móvil de 1 s supera el tope.
 - [ ] Con 200 equipos y tope de 3/s, crece el intervalo efectivo y `chain_poll_saturated` se emite a lo más una vez por minuto.
@@ -230,6 +236,6 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 - Herramientas manuales de intervención.
 
 ## Supuestos y riesgos
-- `State Mode 0` puede reportar una salida inmediata si el equipo se configura fuera de la zona. Validar en la fase de pruebas con unidad real; si ocurre, se corrige en la spec 003.
+- Confirmado en la prueba física del 2026-11-25: un equipo configurado fuera de la zona reporta una salida (`00`) a los pocos segundos del ACK sin haber entrado. Se resuelve con la regla de entrada previa (filas 7 y 12). Limitación: si el equipo está dentro de la zona al configurarse y sale antes de reportar su entrada, la ruta espera una nueva entrada.
 - Una salida duplicada o tardía del punto anterior podría completar el siguiente (ver `docs/architecture.md` §10).
 - El adaptador de BullMQ no se puede probar con Redis en memoria (usa scripts Lua): se verifica en el despliegue sombra y de pruebas.

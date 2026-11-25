@@ -25,7 +25,7 @@ test('la primera transmisión se conserva al retransmitir y se limpia al cambiar
     pendingRequest: null, ackDeadline: new Date(1000).toISOString() };
   expect(transition(sent, { kind: 'ACK_DEADLINE', at: 1000, backoffMs: 60000, resend: true, dryRun: false })
     .state?.firstTransmissionAt).toBe(sent.firstTransmissionAt);
-  const zone = { ...sent, fsmState: 'IN_ZONE' as const };
+  const zone = { ...sent, fsmState: 'AWAITING_EXIT_ALERT' as const };
   expect(transition(zone, { kind: 'EXIT', geofenceId: 0, nextPointId: 5 }).state?.firstTransmissionAt).toBeNull();
   expect(transition(zone, { kind: 'ASSIGNMENT_ENDED', finalEstado: 5 }).state?.firstTransmissionAt).toBeNull();
 });
@@ -46,13 +46,19 @@ test('ACK correcto activa zona; otro serial y eventos repetidos se ignoran', () 
   expect(transition(active, { kind: 'ACK', serial: '0000' }).state).toBe(active);
   expect(transition(active, { kind: 'ENTER', geofenceId: 1 }).state).toBe(active);
   expect(transition(active, { kind: 'ENTER', geofenceId: 0 }).state?.fsmState).toBe('AWAITING_EXIT_ALERT');
+  expect(transition({ ...base, fsmState: 'AWAITING_ACK', pendingRequest: null }, { kind: 'ENTER', geofenceId: 0 }).state?.fsmState).toBe('AWAITING_ACK');
+  const entered = transition(active, { kind: 'ENTER', geofenceId: 0 }).state!;
+  expect(transition(entered, { kind: 'ENTER', geofenceId: 0 }).state).toBe(entered);
 });
 
-test('salida sin entrada avanza punto o reset', () => {
+test('salida sin entrada se ignora; después de entrar avanza punto o reset', () => {
   const active = { ...base, fsmState: 'IN_ZONE' as const, pendingRequest: null };
-  const next = transition(active, { kind: 'EXIT', geofenceId: 0, nextPointId: 5 }).state!;
+  expect(transition(active, { kind: 'EXIT', geofenceId: 0, nextPointId: 5 }))
+    .toEqual({ state: active, effects: ['EXIT_BEFORE_ENTER_IGNORED'] });
+  const entered = transition(active, { kind: 'ENTER', geofenceId: 0 }).state!;
+  const next = transition(entered, { kind: 'EXIT', geofenceId: 0, nextPointId: 5 }).state!;
   expect(next).toMatchObject({ fsmState: 'PENDING', currentPointId: 5, completedPointIds: [3], stepSeq: 1 });
-  const reset = transition(active, { kind: 'EXIT', geofenceId: 0, nextPointId: null }).state!;
+  const reset = transition(entered, { kind: 'EXIT', geofenceId: 0, nextPointId: null }).state!;
   expect(reset.closing).toEqual({ reason: 'ROUTE_DONE', finalEstado: null });
   expect(transition(active, { kind: 'EXIT', geofenceId: 1, nextPointId: 5 }).state).toBe(active);
 });
