@@ -9,7 +9,7 @@
 1. Lee de la BD de GlobalTrack (solo lectura) las asignaciones de viaje vigentes de las empresas habilitadas.
 2. Cuando una asignación está por iniciar, resuelve su unidad, dispositivo y modelo, y lee los puntos de su ruta con coordenadas y radio.
 3. Configura en el equipo, uno por uno, la geocerca del punto actual (`AT+GTGEO`). **El envío lo hace la API de comandos**, no el middleware.
-4. Espera el ACK del equipo y su salida de zona leyendo las tramas de `tbl_cadena`.
+4. Espera el ACK del equipo, su entrada a la zona y su salida de la zona (la salida solo cuenta después de la entrada) leyendo las tramas de `tbl_cadena`.`
 5. Pasa al siguiente punto. Al terminar la ruta, o cuando la asignación deja de ser vigente, desactiva la zona (reset, `Mode=0`).
 6. Nunca se rinde, nunca salta un punto y nunca se detiene por un error.
 
@@ -114,7 +114,7 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 - Una asignación vigente por unidad. Si hay dos, se atiende la de `dt_hora_inicial` más temprana y se avisa.
 - Cambios al punto actual mientras se espera su salida se aplican al siguiente paso (limitación de la v1).
 - Cambio de partición: se leen la partición anterior y la nueva durante los primeros 5 minutos de cada semana; una trama insertada en la anterior más de 5 minutos después del corte no se lee (riesgo bajo).
-- `State Mode 0` (spec 003): un equipo configurado fuera de la zona podría reportar una salida inmediata. Validar en la fase 2.
+- Confirmado en la fase 2 (2026-11-25): un equipo configurado fuera de la zona reporta una salida (+RESP:GTGEO, estado 00) a los pocos segundos de su ACK, sin haber entrado. La salida solo cuenta después de una entrada del mismo paso. Si el equipo está dentro de la zona al configurarse y sale antes de reportar su entrada, la ruta espera una nueva entrada.
 - Una salida duplicada o tardía del punto anterior podría completar el siguiente. Validar en la fase 2.
 - Las rutas desordenadas (`int_tipo = 1`) aún no se atienden: se detectan y se omiten con alerta.
 
