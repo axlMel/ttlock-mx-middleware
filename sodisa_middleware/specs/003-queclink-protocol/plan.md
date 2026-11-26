@@ -1,5 +1,8 @@
 # Plan 003 — Protocolo Queclink
 
+## Enmienda de apagado de salida
+`buildOutOffCommand` reutiliza la validación de serial de `GTGEO` y el token del perfil. `parseMessage` distingue el encabezado de cada ACK antes de escoger el índice del serial: 5 para `GTGEO`, 4 para `GTOUT`. Tres fixtures `GTOUT` cubren el campo 4; el índice de GV310LAU requiere comprobación en equipo real.
+
 ## Decisiones
 1. **Funciones libres y datos, no clases.** `DeviceProfile` es un objeto de datos; `buildGeoCommand(profile, input)` es una función. (Si spec y plan chocaran, gana este razonamiento: perfiles como datos permiten añadir un modelo sin tocar la lógica.)
 2. **Validar en un solo lugar.** `buildGeoCommand` valida y lanza; los demás módulos no repiten reglas.

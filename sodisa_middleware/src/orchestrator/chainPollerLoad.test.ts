@@ -37,7 +37,7 @@ function fixture(count: number, rate = 3) {
   };
   const limiter = createChainQueryLimiter(rate, () => time);
   const opts: OrchestratorOptions = { enabledCompanies: new Map([[364, 2]]), pollIntervalMsRoutes: 10000,
-    chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: rate, ackRetryBackoffMs: 150000,
+    chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: rate, ackRetryBackoffMs: 30000,
     ackMaxRetries: 3, ackResendEnabled: true, dryRun: true, now: () => time };
   const logger = { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
   const deps = {
@@ -53,7 +53,7 @@ function fixture(count: number, rate = 3) {
     gateway: { send: jest.fn() }, scheduler: { schedule: jest.fn(), cancel: jest.fn(),
       onTask: jest.fn(), close: jest.fn() },
   } as unknown as OrchestratorDeps;
-  const poller = new ChainPoller(deps, opts, new Map(), {} as StepRunner, new KeyedMutex());
+  const poller = new ChainPoller(deps, opts, new Map(), { resendAfterRead: async () => undefined } as unknown as StepRunner, new KeyedMutex());
   return { add, poller, timestamps, logger, limiter, setTime: (value: number) => { time = start + value; },
     setHasMoreOnce: (id: number) => { hasMoreOnce.add(id); } };
 }

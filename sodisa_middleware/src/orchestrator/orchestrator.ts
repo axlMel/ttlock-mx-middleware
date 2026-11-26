@@ -1,4 +1,4 @@
-import { buildGeoCommand, buildResetCommand, profileFor } from '../protocol';
+import { buildGeoCommand, buildResetCommand, buildOutOffCommand, profileFor } from '../protocol';
 import { describeError } from '../common';
 import type { RouteState } from '../persistence';
 import { AssignmentCycle } from './assignmentCycle';
@@ -14,7 +14,8 @@ export function createOrchestrator(deps: OrchestratorDeps, opts: OrchestratorOpt
   const commandFor = async (state: RouteState): Promise<string> => {
     const profile = profileFor(state.model);
     const serial = serialFor(state.stepSeq);
-    if (state.currentPointId === null) return buildResetCommand(profile, serial);
+    if (state.currentPointId === null) return state.closingPhase === 'OUT_OFF'
+      ? buildOutOffCommand(profile, serial) : buildResetCommand(profile, serial);
     const plan = await deps.catalog.plans.getPlan(state.companyId, state.catalogRouteId);
     const point = plan.points.find((item) => item.pointId === state.currentPointId);
     if (!point) throw new Error(`Punto ${state.currentPointId} no disponible en el plan`);
@@ -45,7 +46,7 @@ export function createOrchestrator(deps: OrchestratorDeps, opts: OrchestratorOpt
     async start(): Promise<void> {
       if (running) return;
       const states = await deps.routeStates.list();
-      for (const state of states) unitIndex.set(state.unitId, state.assignmentId);
+      for (const state of states) if (state.fsmState !== 'COMPLETED') unitIndex.set(state.unitId, state.assignmentId);
       deps.scheduler.onTask(async (task) => mutex.run(task.assignmentId, () => runner.onTask(task)));
       running = true;
       for (const state of states) {

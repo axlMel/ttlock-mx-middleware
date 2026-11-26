@@ -28,25 +28,34 @@ export class RedisRouteStateStore implements RouteStateStore {
     const assignmentId = await this.redis.get(key);
     if (assignmentId === null) return null;
     if (!/^[0-9]+$/.test(assignmentId)) throw new CorruptStateError(key);
-    return this.get(Number(assignmentId));
+    const state = await this.get(Number(assignmentId));
+    return state?.fsmState === 'COMPLETED' ? null : state;
   }
 
   async set(state: RouteState): Promise<void> {
     const previous = await this.get(state.assignmentId);
-    const transaction = this.redis.multi();
-    if (previous !== null && previous.deviceId !== state.deviceId) {
-      transaction.del(deviceRouteKey(previous.deviceId));
-    }
-    transaction.set(routeKey(state.assignmentId), JSON.stringify(state));
-    transaction.set(deviceRouteKey(state.deviceId), String(state.assignmentId));
-    await transaction.exec();
+    await this.redis.eval(`
+      if KEYS[3] ~= KEYS[2] and redis.call('GET', KEYS[3]) == ARGV[1] then redis.call('DEL', KEYS[3]) end
+      redis.call('SET', KEYS[1], ARGV[2])
+      if ARGV[3] == 'COMPLETED' then
+        if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('DEL', KEYS[2]) end
+      else
+        local owner = redis.call('GET', KEYS[2])
+        if not owner or owner == ARGV[1] then redis.call('SET', KEYS[2], ARGV[1]) end
+      end
+      return 1
+    `, 3, routeKey(state.assignmentId), deviceRouteKey(state.deviceId),
+    deviceRouteKey(previous?.deviceId ?? state.deviceId), String(state.assignmentId), JSON.stringify(state), state.fsmState);
   }
 
   async delete(assignmentId: number): Promise<void> {
     const state = await this.get(assignmentId);
-    const transaction = this.redis.multi().del(routeKey(assignmentId));
-    if (state !== null) transaction.del(deviceRouteKey(state.deviceId));
-    await transaction.exec();
+    if (!state) return;
+    await this.redis.eval(`
+      redis.call('DEL', KEYS[1])
+      if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('DEL', KEYS[2]) end
+      return 1
+    `, 2, routeKey(assignmentId), deviceRouteKey(state.deviceId), String(assignmentId));
   }
 
   async list(): Promise<RouteState[]> {
@@ -73,7 +82,9 @@ export class RedisRouteStateStore implements RouteStateStore {
     try {
       const parsed = JSON.parse(value) as RouteState;
       return { ...parsed, lastAcceptedCommand: parsed.lastAcceptedCommand ?? null,
-        firstTransmissionAt: parsed.firstTransmissionAt ?? null };
+        firstTransmissionAt: parsed.firstTransmissionAt ?? null,
+        ...(parsed.closing && !parsed.closingPhase ? { closingPhase: 'RESET' as const } : {}),
+        fsmState: (parsed.fsmState as string) === 'IN_ZONE' ? 'AWAITING_ENTER_ALERT' : parsed.fsmState };
     }
     catch (error) { throw new CorruptStateError(key, { cause: error }); }
   }

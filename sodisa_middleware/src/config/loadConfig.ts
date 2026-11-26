@@ -108,7 +108,7 @@ export function loadConfig(env: Record<string, string | undefined>, readFile: (p
     pollIntervalMsRoutes: number('POLL_INTERVAL_MS_ROUTES', 10000, 1),
     chainPollIntervalMs: number('CHAIN_POLL_INTERVAL_MS', 60000, 1),
     chainMaxQueriesPerSecond: positiveRate('CHAIN_MAX_QUERIES_PER_SECOND', 3),
-    ackRetryBackoffMs: number('ACK_RETRY_BACKOFF_MS', 150000, 1),
+    ackRetryBackoffMs: number('ACK_RETRY_BACKOFF_MS', 30000, 1),
     ackMaxRetries: number('ACK_MAX_RETRIES', 3, 1),
     ackResendEnabled: boolean('ACK_RESEND_ENABLED', true),
     catalogRevalidateMs: number('CATALOG_REVALIDATE_MS', 300000, 1),

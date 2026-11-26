@@ -77,6 +77,31 @@ test('RouteState antiguo sin lastAcceptedCommand ni firstTransmissionAt se lee c
   await expect(store.get(42)).resolves.toEqual({ ...previous, lastAcceptedCommand: null, firstTransmissionAt: null });
 });
 
+test('migra IN_ZONE y cierre sin fase al leer JSON anterior y guarda nombres nuevos', async () => {
+  const store = new RedisRouteStateStore(redis);
+  await redis.set(routeKey(42), JSON.stringify({ ...state, fsmState: 'IN_ZONE',
+    closing: { reason: 'ROUTE_DONE', finalEstado: null } }));
+  const migrated = await store.get(42);
+  expect(migrated).toMatchObject({ fsmState: 'AWAITING_ENTER_ALERT', closingPhase: 'RESET' });
+  await store.set(migrated!);
+  expect(await redis.get(routeKey(42))).toContain('AWAITING_ENTER_ALERT');
+  expect(await redis.get(routeKey(42))).not.toContain('IN_ZONE');
+});
+
+test('COMPLETED libera índice y borrar ruta antigua conserva índice de ruta nueva', async () => {
+  const store = new RedisRouteStateStore(redis);
+  await store.set(state);
+  await store.set({ ...state, fsmState: 'COMPLETED' });
+  expect(await redis.get(deviceRouteKey(9001))).toBeNull();
+  const next = { ...state, assignmentId: 43 };
+  await store.set(next);
+  await store.delete(42);
+  expect(await redis.get(deviceRouteKey(9001))).toBe('43');
+  expect(await store.getByDevice(9001)).toMatchObject({ assignmentId: 43 });
+  await store.set({ ...state, fsmState: 'COMPLETED' });
+  expect(await redis.get(deviceRouteKey(9001))).toBe('43');
+});
+
 test('JSON corrupto lanza en get y getByDevice; list avisa, omite y continúa', async () => {
   const onCorrupt = jest.fn();
   const store = new RedisRouteStateStore(redis, { onCorrupt });

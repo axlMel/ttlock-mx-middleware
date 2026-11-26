@@ -14,7 +14,7 @@ escribe en la BD externa (principio V).
 ```typescript
 type FsmState =
   | 'PENDING' | 'CONFIGURING' | 'AWAITING_ACK'
-  | 'IN_ZONE' | 'AWAITING_EXIT_ALERT' | 'COMPLETED';
+  | 'AWAITING_ENTER_ALERT' | 'AWAITING_EXIT_ALERT' | 'COMPLETED';
 
 interface PendingRequest {
   idempotencyKey: string;
@@ -39,7 +39,9 @@ interface RouteState {
   pendingRequest: PendingRequest | null; // guardada ANTES de llamar a la API
   lastAcceptedCommand: string | null; // comando del paso aceptado; ausente en estados antiguos equivale a null
   firstTransmissionAt: string | null; // ISO del primer intento del paso, guardado antes de invocar al gateway; ausente equivale a null
-  ackDeadline: string | null;    // ISO: fin de la ventana de ACK de la última transmisión aceptada
+  ackDeadline: string | null;    // ISO: hora mínima de retransmisión tras la última transmisión aceptada
+  lastAcceptedAt?: string | null; // ISO: última transmisión aceptada; ancla de salvaguarda tras reinicio
+  closingPhase?: 'RESET' | 'OUT_OFF';
   closing: null | { reason: 'ROUTE_DONE' | 'ASSIGNMENT_ENDED'; finalEstado: number | null };
   startedAt: string;
   updatedAt: string;
@@ -81,12 +83,13 @@ interface CatalogCacheStore {
 
 ## Llaves en Redis
 - `route:{assignmentId}` → `RouteState` en JSON.
-- `device-route:{deviceId}` → `assignmentId` (índice para despachar tramas).
+- `device-route:{deviceId}` → `assignmentId` de una ruta activa; `COMPLETED` no ocupa el dispositivo.
 - `chain-cursor:{deviceId}` → `ChainCursor` en JSON.
 - `catalog:{entity}:{id}` → `CatalogEntry` en JSON.
 
 ## Reglas
-- `set` de `RouteState` actualiza `route:` y `device-route:` en una sola transacción (`MULTI`); `delete` borra ambas llaves.
+- `set` de `RouteState` actualiza `route:` y `device-route:` atómicamente; `delete` borra el índice solo si todavía pertenece a esa asignación. Un `set` a `COMPLETED` libera el índice solo si todavía le pertenece. La actualización de dispositivo también comprueba el dueño del índice anterior.
+- Al leer JSON anterior, `IN_ZONE` se convierte en `AWAITING_ENTER_ALERT` y un cierre sin `closingPhase` se interpreta como `RESET`. La siguiente escritura guarda los valores nuevos.
 - `list()` recorre las llaves con `SCAN`, nunca con `KEYS`, y solo considera llaves `route:{número}`.
 - Sin TTL en `RouteState`, cursores ni caché; la vigencia de la caché la decide la spec 005.
 - Redis requiere `appendonly yes` y `maxmemory-policy noeviction` (requisito de despliegue; Ever).

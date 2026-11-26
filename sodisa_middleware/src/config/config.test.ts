@@ -10,7 +10,7 @@ test('convierte defaults, pares y booleanos', () => {
   const config = loadConfig(valid, missingFile);
   expect(config.enabledCompanies).toEqual(new Map([[364, 2]]));
   expect(config).toMatchObject({ assignmentTz: 'UTC', pollIntervalMsRoutes: 10000,
-    chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: 3, ackRetryBackoffMs: 150000, ackMaxRetries: 3,
+    chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: 3, ackRetryBackoffMs: 30000, ackMaxRetries: 3,
     ackResendEnabled: true, catalogRevalidateMs: 300000, chainBatchLimit: 500,
     chainOverlapMs: 10000, commandApiTimeoutMs: 10000,
     dryRun: false, auditLogDir: './audit' });

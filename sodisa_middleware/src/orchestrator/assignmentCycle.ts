@@ -9,6 +9,8 @@ import type { OrchestratorDeps, OrchestratorOptions } from './types';
 export class AssignmentCycle {
   private delay: number;
   private readonly unorderedAlerted = new Set<number>();
+  private readonly completedAlerted = new Set<number>();
+  private readonly occupiedAlerted = new Map<number, number>();
   private readonly pendingStarts = new Map<number, Promise<void>>();
   private readonly pendingUnits = new Set<number>();
   private readonly deferredFailures = new Set<number>();
@@ -52,7 +54,10 @@ export class AssignmentCycle {
       catch (error) { assignmentFailed(row.assignmentId, row.companyId, 0, 'vigencia', error); }
     }
     for (const assignmentId of [...this.unorderedAlerted]) if (!vigente.has(assignmentId)) this.unorderedAlerted.delete(assignmentId);
+    for (const assignmentId of [...this.completedAlerted]) if (!vigente.has(assignmentId)) this.completedAlerted.delete(assignmentId);
+    for (const assignmentId of [...this.occupiedAlerted.keys()]) if (!vigente.has(assignmentId)) this.occupiedAlerted.delete(assignmentId);
     const states = await this.deps.routeStates.list();
+    const completedIds = new Set(states.filter((state) => state.fsmState === 'COMPLETED').map((state) => state.assignmentId));
     for (const state of states) {
       if (vigente.has(state.assignmentId)) {
         if (state.fsmState === 'PENDING' || (state.fsmState === 'CONFIGURING' && !state.pendingRequest)) {
@@ -73,9 +78,15 @@ export class AssignmentCycle {
         await this.mutex.run(state.assignmentId, async () => {
         const current = await this.deps.routeStates.get(state.assignmentId);
         if (!current) return;
-        if (current.closing?.reason === 'ASSIGNMENT_ENDED' &&
+        if (current.closing &&
           (current.fsmState === 'PENDING' || (current.fsmState === 'CONFIGURING' && !current.pendingRequest))) {
-          await this.runner.send(current);
+          if (current.closing.reason === 'ROUTE_DONE') {
+            const row = await this.deps.detectors.assignments.getById(current.assignmentId);
+            const closing = row && isActiveAssignment(row) ? current
+              : transition(current, { kind: 'ASSIGNMENT_ENDED', finalEstado: row?.estado ?? null }).state!;
+            if (closing !== current) await this.deps.routeStates.set(closing);
+            await this.runner.send(closing);
+          } else await this.runner.send(current);
           return;
         }
         const row = await this.deps.detectors.assignments.getById(current.assignmentId);
@@ -84,9 +95,10 @@ export class AssignmentCycle {
         if (result.state === current) return;
         if (!result.state) {
           await this.deps.routeStates.delete(current.assignmentId);
-          this.unitIndex.delete(current.unitId);
           await this.runner.cancel(current.assignmentId);
-          await this.deps.cursors.delete(current.deviceId);
+          const indexed = await this.deps.routeStates.getByDevice(current.deviceId);
+          if (!indexed || indexed.assignmentId === current.assignmentId) await this.deps.cursors.delete(current.deviceId);
+          if (this.unitIndex.get(current.unitId) === current.assignmentId) this.unitIndex.delete(current.unitId);
         } else {
           await this.deps.routeStates.set(result.state);
           await this.runner.cancel(current.assignmentId);
@@ -101,10 +113,24 @@ export class AssignmentCycle {
       }
     }
     const selected = new Map<number, AssignmentRow>();
+    const candidateIds: number[] = [];
     for (const row of assignments) {
       if (failedAssignments.has(row.assignmentId)) continue;
       try {
         if (!this.opts.enabledCompanies.has(row.companyId) || !isActiveAssignment(row)) continue;
+        if (completedIds.has(row.assignmentId)) {
+          if (!this.completedAlerted.has(row.assignmentId))
+            this.deps.logger.info('assignment_skipped_completed', this.fields(row.assignmentId, 0));
+          this.completedAlerted.add(row.assignmentId);
+          continue;
+        }
+        candidateIds.push(row.assignmentId);
+        const occupying = this.unitIndex.get(row.unitId);
+        if (occupying !== undefined && occupying !== row.assignmentId) {
+          if (this.occupiedAlerted.get(row.assignmentId) !== occupying)
+            this.deps.logger.warn('unit_already_in_route', { ...this.fields(row.assignmentId, 0), occupyingRouteId: occupying });
+          this.occupiedAlerted.set(row.assignmentId, occupying);
+        } else this.occupiedAlerted.delete(row.assignmentId);
         const previous = selected.get(row.unitId);
         if (!previous || row.horaInicial.getTime() < previous.horaInicial.getTime() ||
           (row.horaInicial.getTime() === previous.horaInicial.getTime() && row.assignmentId < previous.assignmentId)) selected.set(row.unitId, row);
@@ -114,7 +140,6 @@ export class AssignmentCycle {
       try {
         const occupying = this.unitIndex.get(row.unitId);
         if (occupying !== undefined) {
-          if (occupying !== row.assignmentId) this.deps.logger.warn('unit_already_in_route', this.fields(row.assignmentId, 0));
           continue;
         }
         if (this.pendingUnits.has(row.unitId) || this.pendingStarts.has(row.assignmentId) || this.stopping) continue;
@@ -163,7 +188,8 @@ export class AssignmentCycle {
     this.delay = changed ? this.opts.pollIntervalMsRoutes : Math.min(this.opts.pollIntervalMsRoutes * 5, this.delay * 2);
     pollLogged = true;
     this.deps.logger.debug('assignment_poll', { timestamp: new Date(this.now()).toISOString(), source: 'assignments',
-      count: assignments.length, failedAssignments: new Set([...failedAssignments, ...previousFailures]).size,
+      count: assignments.length, candidateIds: candidateIds.slice(0, 20),
+      failedAssignments: new Set([...failedAssignments, ...previousFailures]).size,
       nextDelayMs: this.delay, failed: failed || previousFailures.size > 0 });
   }
 }

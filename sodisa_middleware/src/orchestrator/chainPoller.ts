@@ -21,7 +21,7 @@ export class ChainPoller {
   private now(): number { return (this.opts.now ?? Date.now)(); }
   private waiting(state: RouteState): boolean {
     return (state.fsmState === 'CONFIGURING' && state.pendingRequest !== null) ||
-      state.fsmState === 'AWAITING_ACK' || state.fsmState === 'IN_ZONE' || state.fsmState === 'AWAITING_EXIT_ALERT';
+      state.fsmState === 'AWAITING_ACK' || state.fsmState === 'AWAITING_ENTER_ALERT' || state.fsmState === 'AWAITING_EXIT_ALERT';
   }
   private effectiveIntervalMs(): number {
     return Math.max(this.opts.chainPollIntervalMs,
@@ -96,11 +96,11 @@ export class ChainPoller {
         const parsed = parseMessage(decodeFrame(frame.raw));
         if (parsed.kind === 'unknown') continue;
         let event;
-        if (parsed.kind === 'ack') event = { kind: 'ACK' as const, serial: parsed.serial };
+        if (parsed.kind === 'ack') event = { kind: 'ACK' as const, command: parsed.command, serial: parsed.serial };
         else if (parsed.event === 'enter') event = { kind: 'ENTER' as const, geofenceId: parsed.geofenceId };
         else {
-          if (parsed.geofenceId !== 0 || (current.fsmState !== 'IN_ZONE' && current.fsmState !== 'AWAITING_EXIT_ALERT')) continue;
-          if (current.fsmState === 'IN_ZONE') event = { kind: 'EXIT' as const, geofenceId: parsed.geofenceId, nextPointId: null };
+          if (parsed.geofenceId !== 0 || (current.fsmState !== 'AWAITING_ENTER_ALERT' && current.fsmState !== 'AWAITING_EXIT_ALERT')) continue;
+          if (current.fsmState === 'AWAITING_ENTER_ALERT') event = { kind: 'EXIT' as const, geofenceId: parsed.geofenceId, nextPointId: null };
           else {
             const plan = await this.deps.catalog.plans.getPlan(current.companyId, current.catalogRouteId, { forceFresh: true });
             const done = new Set([...current.completedPointIds, current.currentPointId]);
@@ -117,17 +117,23 @@ export class ChainPoller {
           continue;
         }
         if (next.state) await this.deps.routeStates.set({ ...next.state, updatedAt: new Date(this.now()).toISOString() });
-        else {
-          await this.deps.routeStates.delete(current.assignmentId);
-          this.unitIndex.delete(current.unitId);
+        else await this.deps.routeStates.delete(current.assignmentId);
+        if (!next.state || next.state.fsmState === 'COMPLETED') {
+          await this.deps.cursors.delete(current.deviceId);
+          if (this.unitIndex.get(current.unitId) === current.assignmentId) this.unitIndex.delete(current.unitId);
         }
         this.deps.logger.info('route_transition', { timestamp: new Date(this.now()).toISOString(), deviceId: current.deviceId,
           routeId: current.assignmentId, stepSeq: current.stepSeq, transmissionSeq: current.transmissionSeq });
         if (next.effects.includes('CANCEL_TIMERS')) await this.runner.cancel(current.assignmentId);
         if (next.effects.includes('TRANSMIT') && next.state) await this.runner.send(next.state);
       }
-      if (await this.deps.routeStates.get(state.assignmentId)) await this.deps.cursors.set(state.deviceId, result.cursor);
-      else await this.deps.cursors.delete(state.deviceId);
+      const afterBatch = await this.deps.routeStates.get(state.assignmentId);
+      if (afterBatch && afterBatch.fsmState !== 'COMPLETED') {
+        await this.deps.cursors.set(state.deviceId, result.cursor);
+        if (state.fsmState === 'AWAITING_ACK' && afterBatch.stepSeq === state.stepSeq &&
+          afterBatch.transmissionSeq === state.transmissionSeq && afterBatch.ackDeadline === state.ackDeadline)
+          await this.runner.resendAfterRead(afterBatch);
+      }
       if (anchor) this.deps.logger.warn('chain_cursor_reset', { timestamp: new Date(this.now()).toISOString(),
         deviceId: state.deviceId, routeId: state.assignmentId, anchor });
       if (result.hasMore) this.backlog.add(state.deviceId);

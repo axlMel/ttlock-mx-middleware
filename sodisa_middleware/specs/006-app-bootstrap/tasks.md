@@ -1,5 +1,7 @@
 # Tasks 006 — Arranque de la aplicación
 
+- [x] **Enmienda de mínimo ACK.** Fijar 30000 por defecto, retirar el aviso de coherencia anterior y probar `startup_config`, validación y cableado.
+
 - [x] **T1. Revisión.** Listar lo que ya exista de arranque (`src/`, `package.json`, `.env.example`). Reportarlo. No reutilizar nada de `legacy/`.
 - [x] **T2. `loadConfig`.** Todas las variables de la spec, defaults, conversión, reglas de validación y `ConfigError` con la lista completa. Pruebas: defaults, cada regla, varias inválidas a la vez, `ENABLED_COMPANIES` (duplicados, mal formado), booleanos, zona horaria.
 - [x] **T3. Secretos.** `secrets.ts`: credenciales de `CREDENTIALS_DIRECTORY`, respaldo en entorno, recorte de espacios, error sin fuentes (sin valores en el mensaje). Pruebas con valores reconocibles.
@@ -14,7 +16,7 @@
 - [x] **T12. Enmienda de REDIS_URL.** Leer `redis-url` desde `CREDENTIALS_DIRECTORY` con respaldo en `REDIS_URL` para desarrollo; validar el esquema, ocultar la URL y su contraseña en configuración, logs y errores, quitarla de `.env.example` y probar precedencia, ausencia y redacción. Commit separado antes de 008.
 - [x] **T13. Enmienda de estados.** Quitar `START_MARGIN_MINUTES` de `AppConfig`, validación, `startup_config`, pruebas, cableado de `src/app/` y ejemplo de despliegue; si existe en el entorno, ignorarla sin error.
 - [x] **T14. Causa segura de arranque.** Usar `describeError` de `src/common/` en ambos `startup_failed`, conservar `stage` en `buildApp`, omitir `errorMessage` y probar `errorCode: '28P01'` sin mensaje secreto.
-- [x] **T15. Configuración de carga.** Sustituir `POLL_INTERVAL_MS_ACK` por `CHAIN_POLL_INTERVAL_MS` y `CHAIN_MAX_QUERIES_PER_SECOND`, usar ACK 150000, validar tasa decimal e ignorar la variable retirada; pruebas de defaults y valores inválidos.
-- [x] **T16. Cableado y aviso.** Conectar el limitador de 002 a todas las consultas SQL de tramas, pasar opciones al orquestador, registrar `config_warning` si la ventana ACK es insuficiente y comprobar `startup_config`.
+- [x] **T15. Configuración de carga.** Sustituir `POLL_INTERVAL_MS_ACK` por `CHAIN_POLL_INTERVAL_MS` y `CHAIN_MAX_QUERIES_PER_SECOND`, validar tasa decimal e ignorar la variable retirada; pruebas de defaults y valores inválidos.
+- [x] **T16. Cableado y aviso.** Conectar el limitador de 002 a todas las consultas SQL de tramas, pasar opciones al orquestador y comprobar `startup_config`.
 - [x] **T17. Despliegue y cierre.** Actualizar el ejemplo de entorno y referencias de `deploy/`; ejecutar lint, build y tests, revisar referencias restantes y hacer commit sin tocar documentos humanos ni `legacy/`.
 - [x] **T18. Partición por calendario.** Eliminar `PARTITION_REFRESH_MS` de configuración y ejemplo; cablear `onPartitionSelected`, registrar el cambio y probar valor antiguo ignorado y ausencia en `startup_config`.

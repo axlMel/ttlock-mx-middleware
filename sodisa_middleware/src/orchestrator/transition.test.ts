@@ -40,10 +40,10 @@ test('ACCEPTED programa ventana; dryRun no la programa', () => {
 });
 
 test('ACK correcto activa zona; otro serial y eventos repetidos se ignoran', () => {
-  expect(transition(base, { kind: 'ACK', serial: '00FF' }).state).toBe(base);
-  const active = transition(base, { kind: 'ACK', serial: '0000' }).state!;
-  expect(active.fsmState).toBe('IN_ZONE');
-  expect(transition(active, { kind: 'ACK', serial: '0000' }).state).toBe(active);
+  expect(transition(base, { kind: 'ACK', command: 'GTGEO', serial: '00FF' }).state).toBe(base);
+  const active = transition(base, { kind: 'ACK', command: 'GTGEO', serial: '0000' }).state!;
+  expect(active.fsmState).toBe('AWAITING_ENTER_ALERT');
+  expect(transition(active, { kind: 'ACK', command: 'GTGEO', serial: '0000' }).state).toBe(active);
   expect(transition(active, { kind: 'ENTER', geofenceId: 1 }).state).toBe(active);
   expect(transition(active, { kind: 'ENTER', geofenceId: 0 }).state?.fsmState).toBe('AWAITING_EXIT_ALERT');
   expect(transition({ ...base, fsmState: 'AWAITING_ACK', pendingRequest: null }, { kind: 'ENTER', geofenceId: 0 }).state?.fsmState).toBe('AWAITING_ACK');
@@ -52,7 +52,7 @@ test('ACK correcto activa zona; otro serial y eventos repetidos se ignoran', () 
 });
 
 test('salida sin entrada se ignora; después de entrar avanza punto o reset', () => {
-  const active = { ...base, fsmState: 'IN_ZONE' as const, pendingRequest: null };
+  const active = { ...base, fsmState: 'AWAITING_ENTER_ALERT' as const, pendingRequest: null };
   expect(transition(active, { kind: 'EXIT', geofenceId: 0, nextPointId: 5 }))
     .toEqual({ state: active, effects: ['EXIT_BEFORE_ENTER_IGNORED'] });
   const entered = transition(active, { kind: 'ENTER', geofenceId: 0 }).state!;
@@ -63,16 +63,31 @@ test('salida sin entrada se ignora; después de entrar avanza punto o reset', ()
   expect(transition(active, { kind: 'EXIT', geofenceId: 1, nextPointId: 5 }).state).toBe(active);
 });
 
-test('ACK de reset completa o elimina según motivo', () => {
-  const reset = { ...base, currentPointId: null, closing: { reason: 'ROUTE_DONE' as const, finalEstado: null } };
-  expect(transition(reset, { kind: 'ACK', serial: '0000' }).state?.fsmState).toBe('COMPLETED');
-  expect(transition({ ...reset, closing: { reason: 'ASSIGNMENT_ENDED', finalEstado: 4 } }, { kind: 'ACK', serial: '0000' }).state).toBeNull();
+test('ACK de reset pasa a GTOUT; solo su ACK del tipo y serial correctos completa', () => {
+  const reset = { ...base, currentPointId: null, closingPhase: 'RESET' as const,
+    closing: { reason: 'ROUTE_DONE' as const, finalEstado: null } };
+  const out = transition(reset, { kind: 'ACK', command: 'GTGEO', serial: '0000' }).state!;
+  expect(out).toMatchObject({ fsmState: 'PENDING', closingPhase: 'OUT_OFF', stepSeq: 1 });
+  const awaiting = { ...out, fsmState: 'AWAITING_ACK' as const };
+  expect(transition(awaiting, { kind: 'ACK', command: 'GTGEO', serial: '0001' }).state).toBe(awaiting);
+  expect(transition(awaiting, { kind: 'ACK', command: 'GTOUT', serial: '0000' }).state).toBe(awaiting);
+  expect(transition(awaiting, { kind: 'ACK', command: 'GTOUT', serial: '0001' }).state?.fsmState).toBe('COMPLETED');
+  expect(transition({ ...awaiting, closing: { reason: 'ASSIGNMENT_ENDED', finalEstado: 4 } },
+    { kind: 'ACK', command: 'GTOUT', serial: '0001' }).state).toBeNull();
 });
 
 test('cierre sin transmisión elimina; con transmisión crea reset', () => {
   expect(transition({ ...base, fsmState: 'PENDING', transmissionSeq: 0, pendingRequest: null }, { kind: 'ASSIGNMENT_ENDED', finalEstado: 4 }).state).toBeNull();
   expect(transition(base, { kind: 'ASSIGNMENT_ENDED', finalEstado: 4 }).state).toMatchObject({ currentPointId: null, closing: { reason: 'ASSIGNMENT_ENDED', finalEstado: 4 }, stepSeq: 1 });
   expect(transition({ ...base, fsmState: 'COMPLETED' }, { kind: 'ASSIGNMENT_ENDED', finalEstado: 4 }).state).toBeNull();
+});
+
+test('si pierde vigencia en OUT_OFF conserva la fase y el serial', () => {
+  const out: RouteState = { ...base, fsmState: 'AWAITING_ACK', currentPointId: null,
+    closing: { reason: 'ROUTE_DONE', finalEstado: null }, closingPhase: 'OUT_OFF', stepSeq: 2 };
+  const next = transition(out, { kind: 'ASSIGNMENT_ENDED', finalEstado: 5 }).state;
+  expect(next).toMatchObject({ closing: { reason: 'ASSIGNMENT_ENDED', finalEstado: 5 },
+    closingPhase: 'OUT_OFF', stepSeq: 2, fsmState: 'AWAITING_ACK' });
 });
 
 test('ventana vencida retransmite o solo espera; dryRun no retransmite', () => {

@@ -1,6 +1,6 @@
 export type FsmState =
   | 'PENDING' | 'CONFIGURING' | 'AWAITING_ACK'
-  | 'IN_ZONE' | 'AWAITING_EXIT_ALERT' | 'COMPLETED';
+  | 'AWAITING_ENTER_ALERT' | 'AWAITING_EXIT_ALERT' | 'COMPLETED';
 
 export interface PendingRequest {
   idempotencyKey: string;
@@ -26,6 +26,8 @@ export interface RouteState {
   lastAcceptedCommand: string | null;
   firstTransmissionAt: string | null;
   ackDeadline: string | null;
+  lastAcceptedAt?: string | null;
+  closingPhase?: 'RESET' | 'OUT_OFF';
   closing: null | { reason: 'ROUTE_DONE' | 'ASSIGNMENT_ENDED'; finalEstado: number | null };
   startedAt: string;
   updatedAt: string;

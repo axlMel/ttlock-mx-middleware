@@ -166,10 +166,9 @@ secretos. El marcador de logrotate permite revisar a diario la retención sin mo
 el JSONL que el servicio esté escribiendo.
 
 El ejemplo consulta las tramas de cada equipo cada 60 s y limita las consultas a
-`tbl_cadena` a 3 por segundo para proteger la BD de producción. La ventana de ACK
-es de 150 s: cubre el reporte de 60 s del equipo, el siguiente turno de consulta
-y 30 s adicionales. Si se reduce esa ventana, el servicio registra `config_warning`
-para señalar el riesgo de retransmitir antes de poder leer el ACK.
+`tbl_cadena` a 3 por segundo para proteger la BD de producción. El mínimo de ACK
+es de 30 s. Tras ese mínimo, la siguiente lectura completa decide si retransmitir;
+si no hay lectura, una salvaguarda lo hace después de dos intervalos de consulta.
 
 ```bash
 sudo install -o root -g root -m 0644 /opt/gtlock-middleware/current/deploy/gtlock-middleware.service /etc/systemd/system/gtlock-middleware.service

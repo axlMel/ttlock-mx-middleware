@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildGeoCommand, buildResetCommand, decodeFrame, InvalidCommandInputError, parseMessage, profileFor, PROFILES, RESET_PARAMS, type GeoCommandInput } from './index';
+import { buildGeoCommand, buildResetCommand, buildOutOffCommand, decodeFrame, InvalidCommandInputError, parseMessage, profileFor, PROFILES, RESET_PARAMS, type GeoCommandInput } from './index';
 
 const fixtures = join(__dirname, '__fixtures__');
 const fixture = (name: string): string => readFileSync(join(fixtures, `${name}.txt`), 'utf8').trimEnd();
@@ -19,6 +19,12 @@ test('reset usa RESET_PARAMS para ambos modelos', () => {
   expect(buildResetCommand(PROFILES.GV310LAU, '000A', 5)).toBe('AT+GTGEO=gv310lau,5,0,0.000000,0.000000,50,30,0,0,0,0,0,0,0000,0000,0,000A$');
 });
 
+test('GTOUT apaga la salida 3 con serial validado', () => {
+  expect(buildOutOffCommand(PROFILES.GV300W, '0002')).toBe('AT+GTOUT=gv300w,,,,,,,0,,,,,,,,,,0002$');
+  expect(buildOutOffCommand(PROFILES.GV310LAU, '000A')).toBe('AT+GTOUT=gv310lau,,,,,,,0,,,,,,,,,,000A$');
+  expect(() => buildOutOffCommand(PROFILES.GV300W, 'abcd')).toThrow(InvalidCommandInputError);
+});
+
 test.each([
   ['latitude', NaN], ['latitude', -91], ['latitude', 91], ['longitude', Infinity], ['longitude', -181], ['longitude', 181],
   ['radiusM', 49], ['radiusM', 6_000_001], ['radiusM', 50.5], ['mode', 4], ['serial', 'abcd'], ['serial', 'ABC'],
@@ -34,9 +40,12 @@ test('decodeFrame lee bytea_mensaje como latin1 y recorta el final', () => {
 });
 
 test.each([
-  ['gv300w-ack', { kind: 'ack', imei: '863457050476769', serial: 'FFFF' }],
-  ['gv310lau-ack-a', { kind: 'ack', imei: '135790246811220', serial: '000A' }],
-  ['gv310lau-ack-b', { kind: 'ack', imei: '868589060960328', serial: 'FFFF' }],
+  ['gv300w-ack', { kind: 'ack', command: 'GTGEO', imei: '863457050476769', serial: 'FFFF' }],
+  ['gv310lau-ack-a', { kind: 'ack', command: 'GTGEO', imei: '135790246811220', serial: '000A' }],
+  ['gv310lau-ack-b', { kind: 'ack', command: 'GTGEO', imei: '868589060960328', serial: 'FFFF' }],
+  ['gv300w-out-ack-a', { kind: 'ack', command: 'GTOUT', imei: '863457050476769', serial: '0002' }],
+  ['gv300w-out-ack-b', { kind: 'ack', command: 'GTOUT', imei: '863457050476769', serial: 'FFFF' }],
+  ['gv310lau-out-ack', { kind: 'ack', command: 'GTOUT', imei: '868589060960328', serial: '000A' }],
   ['gv300w-enter', { kind: 'zoneEvent', imei: '863457050476769', geofenceId: 0, event: 'enter' }],
   ['gv300w-exit', { kind: 'zoneEvent', imei: '863457050476769', geofenceId: 0, event: 'exit' }],
   ['gv310lau-enter', { kind: 'zoneEvent', imei: '868589060960328', geofenceId: 0, event: 'enter' }],

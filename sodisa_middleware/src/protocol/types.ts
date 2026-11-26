@@ -17,6 +17,6 @@ export interface GeoCommandInput {
 }
 
 export type ParsedMessage =
-  | { kind: 'ack'; imei: string; serial: string; raw: string }
+  | { kind: 'ack'; command: 'GTGEO' | 'GTOUT'; imei: string; serial: string; raw: string }
   | { kind: 'zoneEvent'; imei: string; geofenceId: number; event: 'enter' | 'exit'; raw: string }
   | { kind: 'unknown'; raw: string };

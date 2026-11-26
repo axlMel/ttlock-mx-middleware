@@ -90,20 +90,43 @@ export class StepRunner {
       return;
     }
     if (state.fsmState !== 'AWAITING_ACK' || this.opts.dryRun) return;
-    if (state.closing?.reason !== 'ASSIGNMENT_ENDED') {
+    if (!state.ackDeadline || this.now() < Date.parse(state.ackDeadline)) return;
+    if (!this.opts.ackResendEnabled) {
+      this.deps.logger.warn('ack_window_expired', this.fields(state));
+      await this.schedule(`${ackJobId(state)}:warn:${this.now()}`, this.opts.ackRetryBackoffMs,
+        { kind: 'ACK_DEADLINE', assignmentId: state.assignmentId, stepSeq: state.stepSeq, transmissionSeq: state.transmissionSeq });
+      return;
+    }
+    if (!task.safeguard) {
+      const acceptedAt = state.lastAcceptedAt ? Date.parse(state.lastAcceptedAt)
+        : Date.parse(state.ackDeadline) - this.opts.ackRetryBackoffMs;
+      const safeguardAt = Math.max(Date.parse(state.ackDeadline), acceptedAt + 2 * this.opts.chainPollIntervalMs);
+      await this.schedule(`${ackJobId(state)}:safeguard`, safeguardAt - this.now(),
+        { kind: 'ACK_DEADLINE', assignmentId: state.assignmentId, stepSeq: state.stepSeq,
+          transmissionSeq: state.transmissionSeq, safeguard: true });
+      return;
+    }
+    await this.resend(state);
+  }
+
+  async resendAfterRead(state: RouteState): Promise<void> {
+    if (this.opts.dryRun || !this.opts.ackResendEnabled || state.fsmState !== 'AWAITING_ACK' ||
+      !state.ackDeadline || this.now() < Date.parse(state.ackDeadline)) return;
+    const current = await this.deps.routeStates.get(state.assignmentId);
+    if (!current || current.fsmState !== 'AWAITING_ACK' || current.stepSeq !== state.stepSeq ||
+      current.transmissionSeq !== state.transmissionSeq || current.ackDeadline !== state.ackDeadline) return;
+    await this.resend(current);
+  }
+
+  private async resend(state: RouteState): Promise<void> {
+    if (!state.closing) {
       const assignment = await this.deps.detectors.assignments.getById(state.assignmentId);
       if (!assignment || !isActiveAssignment(assignment)) return;
     }
     const next = transition(state, { kind: 'ACK_DEADLINE', at: this.now(), backoffMs: this.opts.ackRetryBackoffMs,
-      resend: this.opts.ackResendEnabled, dryRun: this.opts.dryRun });
+      resend: true, dryRun: this.opts.dryRun });
     if (!next.state || next.state === state) return;
     await this.save(next.state);
-    if (!this.opts.ackResendEnabled) {
-      this.deps.logger.warn('ack_window_expired', this.fields(state));
-      await this.schedule(ackJobId(next.state), this.opts.ackRetryBackoffMs,
-        { kind: 'ACK_DEADLINE', assignmentId: state.assignmentId, stepSeq: state.stepSeq, transmissionSeq: state.transmissionSeq });
-      return;
-    }
     if (this.opts.ackMaxRetries > 0 && next.state.retryCount % this.opts.ackMaxRetries === 0)
       this.deps.logger.warn('ack_retry_batch_exhausted', { ...this.fields(next.state), batch: next.state.retryCount / this.opts.ackMaxRetries });
     await this.send(next.state);

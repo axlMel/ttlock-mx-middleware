@@ -20,7 +20,7 @@ Variables (defaults en `docs/architecture.md` §7):
 |---|---|
 | `ENABLED_COMPANIES` | Obligatoria. Pares `plataforma:api` separados por coma (`364:2`). Enteros positivos, sin plataformas repetidas. |
 | `ASSIGNMENT_TZ` (`UTC`) | Zona IANA válida (se comprueba con `Intl.DateTimeFormat`). |
-| `POLL_INTERVAL_MS_ROUTES` (10000), `CHAIN_POLL_INTERVAL_MS` (60000), `ACK_RETRY_BACKOFF_MS` (150000), `CATALOG_REVALIDATE_MS` (300000), `COMMAND_API_TIMEOUT_MS` (10000) | Enteros positivos. |
+| `POLL_INTERVAL_MS_ROUTES` (10000), `CHAIN_POLL_INTERVAL_MS` (60000), `ACK_RETRY_BACKOFF_MS` (30000), `CATALOG_REVALIDATE_MS` (300000), `COMMAND_API_TIMEOUT_MS` (10000) | Enteros positivos. |
 | `CHAIN_MAX_QUERIES_PER_SECOND` (3) | Número positivo y finito; admite decimales como `0.5`. |
 | `ACK_MAX_RETRIES` (3), `CHAIN_BATCH_LIMIT` (500) | Enteros ≥ 1. |
 | `CHAIN_OVERLAP_MS` (10000) | Entero ≥ 0. |
@@ -32,7 +32,7 @@ Variables (defaults en `docs/architecture.md` §7):
 `START_MARGIN_MINUTES` se retiró: no se lee ni se valida. Si sigue en el entorno, se ignora sin error y no aparece en `startup_config`.
 `POLL_INTERVAL_MS_ACK` también se retiró: no se lee ni se valida y se ignora si sigue en el entorno.
 `PARTITION_REFRESH_MS` se retiró: no se lee ni se valida; si sigue en el entorno, se ignora sin error y no aparece en `startup_config`.
-La constante interna `DEVICE_REPORT_INTERVAL_MS = 60000` representa la frecuencia de reporte del equipo. Si `ackRetryBackoffMs < DEVICE_REPORT_INTERVAL_MS + chainPollIntervalMs + 30000`, el arranque registra `config_warning` (`warn`) con esos tres valores, sin fallar.
+`ACK_RETRY_BACKOFF_MS` es el mínimo antes de retransmitir; la lectura regular de tramas decide el reenvío. El arranque no compara este mínimo con el intervalo de reporte del equipo.
 
 ### Secretos
 Tres valores son secretos: la **API key de comandos**, la **URL de la BD** y la **URL de Redis**, que contienen contraseñas.
@@ -102,7 +102,7 @@ Cada 60 s se registra un `heartbeat` con: `dryRun`, número de rutas por estado 
 - [ ] `START_MARGIN_MINUTES` se ignora aunque tenga un valor inválido; `AppConfig` y `startup_config` no lo contienen.
 - [ ] Defaults de intervalo de tramas, tope y ventana ACK correctos; `POLL_INTERVAL_MS_ACK` se ignora incluso si es inválido y no aparece en `startup_config`.
 - [ ] `CHAIN_MAX_QUERIES_PER_SECOND` admite decimales positivos y rechaza cero, valores negativos y no finitos.
-- [ ] `config_warning` aparece solo cuando la ventana ACK no alcanza `60000 + chainPollIntervalMs + 30000`, con los tres valores y sin detener el arranque.
+- [ ] `startup_config` muestra `ackRetryBackoffMs = 30000` por defecto y el orquestador recibe ese valor; no se emite el aviso antiguo de coherencia.
 - [ ] El limitador compartido incluye todas las consultas SQL a `tbl_cadena` de `initCursor` y `readNew`, pero el polling de asignaciones permanece independiente.
 - [ ] `PARTITION_REFRESH_MS` se ignora aunque sea inválido; no aparece en `startup_config`, y `chain_partition_selected` se registra al resolver la partición.
 - [ ] Con varias variables inválidas, `ConfigError` lista **todas** (variable y problema), en español.

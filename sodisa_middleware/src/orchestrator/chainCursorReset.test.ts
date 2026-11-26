@@ -14,7 +14,7 @@ const state: RouteState = {
   catalogRouteId: 17, routeType: 0, fsmState: 'AWAITING_ACK', currentPointId: 3,
   completedPointIds: [1, 2], stepSeq: 2, transmissionSeq: 1, retryCount: 0, pendingRequest: null,
   lastAcceptedCommand: 'AT+GTGEO', firstTransmissionAt: '2026-11-18T11:00:00Z',
-  ackDeadline: '2026-11-24T12:02:30Z', closing: null,
+  ackDeadline: '2026-11-24T12:03:00Z', closing: null,
   startedAt: '2026-11-10T11:00:00Z', updatedAt: '2026-11-24T12:00:00Z',
 };
 
@@ -37,12 +37,12 @@ function fixture(route: RouteState) {
   });
   const limiter = createChainQueryLimiter(3, () => now);
   const opts: OrchestratorOptions = { enabledCompanies: new Map([[364, 2]]), pollIntervalMsRoutes: 10000,
-    chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: 3, ackRetryBackoffMs: 150000,
+    chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: 3, ackRetryBackoffMs: 180000,
     ackMaxRetries: 3, ackResendEnabled: true, dryRun: false, now: () => now };
   const deps = { routeStates, cursors, chainQueryLimiter: limiter, logger,
     detectors: { chains: { initCursor, readNew }, assignments: { listVigentes: jest.fn(), getById: jest.fn() } },
     catalog: {}, gateway: {}, scheduler: {} } as unknown as OrchestratorDeps;
-  const poller = new ChainPoller(deps, opts, new Map(), {} as StepRunner, new KeyedMutex());
+  const poller = new ChainPoller(deps, opts, new Map(), { resendAfterRead: async () => undefined } as unknown as StepRunner, new KeyedMutex());
   return { poller, reads, logger, initCursor, readNew, limiter, getCursor: () => cursor };
 }
 

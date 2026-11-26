@@ -17,7 +17,7 @@ export interface OrchestratorOptions {
   now?: () => number;
 }
 export type StepTask =
-  | { kind: 'ACK_DEADLINE'; assignmentId: number; stepSeq: number; transmissionSeq: number }
+  | { kind: 'ACK_DEADLINE'; assignmentId: number; stepSeq: number; transmissionSeq: number; safeguard?: boolean }
   | { kind: 'API_RETRY'; assignmentId: number; stepSeq: number; transmissionSeq: number; attempt: number };
 export interface Scheduler {
   schedule(jobId: string, delayMs: number, task: StepTask): Promise<void>;
@@ -35,7 +35,7 @@ export interface OrchestratorDeps {
 export interface Orchestrator { start(): Promise<void>; stop(): Promise<void> }
 export type TransitionEvent =
   | { kind: 'GATEWAY_ACCEPTED'; at: number; backoffMs: number; dryRun: boolean; command: string }
-  | { kind: 'ACK'; serial: string }
+  | { kind: 'ACK'; command: 'GTGEO' | 'GTOUT'; serial: string }
   | { kind: 'ENTER'; geofenceId: number }
   | { kind: 'EXIT'; geofenceId: number; nextPointId: number | null }
   | { kind: 'ACK_DEADLINE'; at: number; backoffMs: number; resend: boolean; dryRun: boolean }

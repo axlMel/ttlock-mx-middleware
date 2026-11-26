@@ -12,7 +12,6 @@ import { RedisCatalogCacheStore, RedisChainCursorStore, RedisRouteStateStore, ty
 import type { App, AppFactories, PgPool } from './types';
 import { rateLimitedChainSql } from './chainSql';
 
-const DEVICE_REPORT_INTERVAL_MS = 60_000;
 
 export async function ensureAuditDirectory(dir: string): Promise<void> {
   try {
@@ -85,9 +84,6 @@ export function buildApp(config: AppConfig, logger: Logger, factories: AppFactor
       if (startPromise) return startPromise;
       startPromise = (async () => {
         log('startup_config', { config: redactConfig(config) });
-        if (config.ackRetryBackoffMs < DEVICE_REPORT_INTERVAL_MS + config.chainPollIntervalMs + 30_000)
-          logger.warn('config_warning', { timestamp: now(), deviceReportIntervalMs: DEVICE_REPORT_INTERVAL_MS,
-            chainPollIntervalMs: config.chainPollIntervalMs, ackRetryBackoffMs: config.ackRetryBackoffMs });
         await ensureAuditDirectory(config.auditLogDir);
         let stage = 'PostgreSQL';
         try {

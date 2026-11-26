@@ -17,7 +17,8 @@ src/persistence/
 - **El cliente de Redis se inyecta** en el constructor de cada store (`new RouteStateStore(redis, options?)`). El módulo no crea conexiones; en las pruebas recibe `ioredis-mock` (principio III).
 - **Serialización:** `JSON.stringify` y `JSON.parse`. Las fechas son cadenas ISO, como en `types.ts`.
 - **`keys.ts`:** funciones `routeKey(id)`, `deviceRouteKey(id)`, `chainCursorKey(id)` y `catalogKey(entity, id)`. Ningún otro archivo arma llaves a mano.
-- **Transacción:** `set` y `delete` de `RouteStateStore` usan `redis.multi()...exec()` para mantener `route:` y `device-route:` consistentes. Si `ioredis-mock` no soporta `multi`, se usa `pipeline` solo en las pruebas y se deja anotado aquí.
+- **Atomicidad:** `set` y `delete` usan scripts Lua de Redis para comprobar y modificar en una operación el dueño de `device-route:`. Un `MULTI` sin condición permitiría borrar el índice de una ruta nueva. `ioredis-mock` ejecuta los scripts en pruebas.
+- **Compatibilidad:** al leer JSON antiguo, se normaliza `IN_ZONE` y `closingPhase`; la ausencia opcional de `lastAcceptedAt` se interpreta en 002 mediante `ackDeadline − backoff`. La siguiente escritura serializa los nombres nuevos.
 - **`list()`:** bucle de `scan` con `MATCH route:*` y `COUNT 100` hasta que el cursor vuelva a `'0'`; cada llave se filtra con `^route:[0-9]+$`, de modo que `device-route:` nunca entra.
 - **Valores corruptos:** `CorruptStateError` en `get` y `getByDevice`; `list()` omite la llave y llama a `onCorrupt` (opción del constructor, opcional). Así un dato dañado no detiene el arranque del orquestador (principio VII).
 - **Sin TTL.** La vigencia de la caché de catálogo la gestiona el módulo 005.

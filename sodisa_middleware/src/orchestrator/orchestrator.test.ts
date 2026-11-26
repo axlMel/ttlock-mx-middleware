@@ -15,6 +15,7 @@ import type { OrchestratorDeps, OrchestratorOptions } from './types';
 import { route2035162Frames } from './__fixtures__/route2035162';
 
 const ack = (serial: string): string => `+ACK:GTGEO,270D04,863457050476769,,0,${serial},20260921220939,03C8`;
+const outAck = (serial: string): string => `+ACK:GTOUT,270D04,863457050476769,,${serial},20260921220939,03C8$`;
 const enter = '+RESP:GTGEO,270D04,863457050476769,,,01,1,1,0.0,0,2257.0,-99.127905,19.355447,20260921220959,0334,0020,0336,8F3D,00,0.2,20260921220959,03C9';
 const exit = '+RESP:GTGEO,270D04,863457050476769,,,00,1,1,3.3,79,2258.0,-99.127571,19.355516,20260921221159,0334,0020,2C1A,90489A1,00,0.2,20260921221159,03CD';
 const point = (pointId: number, longitude: number) => ({ pointId, order: pointId, siteId: pointId,
@@ -45,7 +46,7 @@ function setup(dryRun = false) {
     estado: 3, enUso: true, horaInicial: new Date(time - 1000), horaFinal: new Date(time + 3600000), modificadoEn: null };
   const opts: OrchestratorOptions = { enabledCompanies: new Map([[364, 2]]),
     pollIntervalMsRoutes: 10000, chainPollIntervalMs: 60000, chainMaxQueriesPerSecond: 3,
-    ackRetryBackoffMs: 150000,
+    ackRetryBackoffMs: 180_000,
     ackMaxRetries: 3, ackResendEnabled: true, dryRun, now: () => time };
   const deps: OrchestratorDeps = {
     detectors: {
@@ -67,10 +68,11 @@ function setup(dryRun = false) {
   const mutex = new KeyedMutex();
   const unitIndex = new Map<number, number>();
   const commandFor = async (state: RouteState): Promise<string> => {
-    const { buildGeoCommand, buildResetCommand, profileFor } = await import('../protocol');
+    const { buildGeoCommand, buildResetCommand, buildOutOffCommand, profileFor } = await import('../protocol');
     const profile = profileFor(state.model);
     const serial = state.stepSeq.toString(16).toUpperCase().padStart(4, '0');
-    if (state.currentPointId === null) return buildResetCommand(profile, serial);
+    if (state.currentPointId === null) return state.closingPhase === 'OUT_OFF'
+      ? buildOutOffCommand(profile, serial) : buildResetCommand(profile, serial);
     const current = plan.points.find((item) => item.pointId === state.currentPointId)!;
     return buildGeoCommand(profile, { latitude: current.latitude, longitude: current.longitude,
       radiusM: current.radiusM, mode: 3, serial });
@@ -110,11 +112,14 @@ test('ruta de dos puntos llega a COMPLETED con reset y seriales sucesivos', asyn
     h.frame(exit); await h.pollChains();
     expect(h.sent[2].command).toContain(',0,0.000000,0.000000,50,');
     h.frame(ack('0002')); await h.pollChains();
+    expect((await h.routeStates.get(42))).toMatchObject({ fsmState: 'AWAITING_ACK', closingPhase: 'OUT_OFF', stepSeq: 3 });
+    expect(h.sent[3].command).toBe('AT+GTOUT=gv300w,,,,,,,0,,,,,,,,,,0003$');
+    h.frame(outAck('0003')); await h.pollChains();
     expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
-    expect(h.sent.map((request) => request.idempotencyKey)).toEqual(['42-0-1', '42-1-1', '42-2-1']);
+    expect(h.sent.map((request) => request.idempotencyKey)).toEqual(['42-0-1', '42-1-1', '42-2-1', '42-3-1']);
     await h.runAssignments();
     expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
-    expect(h.sent).toHaveLength(3);
+    expect(h.sent).toHaveLength(4);
   } finally { h.redis.disconnect(); }
 });
 
@@ -144,9 +149,9 @@ test('ACK, salida, entrada y salida en sondeos separados conservan el orden del 
     await h.runAssignments();
     const getPlan = jest.spyOn(h.deps.catalog.plans, 'getPlan');
     h.frame(ack('0000')); await h.pollChains();
-    expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ENTER_ALERT');
     h.frame(exit); await h.pollChains();
-    expect((await h.routeStates.get(42))).toMatchObject({ fsmState: 'IN_ZONE', stepSeq: 0, currentPointId: 1 });
+    expect((await h.routeStates.get(42))).toMatchObject({ fsmState: 'AWAITING_ENTER_ALERT', stepSeq: 0, currentPointId: 1 });
     expect(getPlan).not.toHaveBeenCalled();
     h.frame(enter); await h.pollChains();
     expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_EXIT_ALERT');
@@ -165,7 +170,7 @@ test('entrada antes del ACK no habilita la salida del paso', async () => {
     h.frame(ack('0000'), '2026-11-17 12:00:02');
     h.frame(exit, '2026-11-17 12:00:03');
     await h.pollChains();
-    expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ENTER_ALERT');
     expect(getPlan).not.toHaveBeenCalled();
     expect(h.sent).toHaveLength(1);
   } finally { h.redis.disconnect(); }
@@ -177,7 +182,7 @@ test('tramas físicas de 2035162 no saltan los puntos 2 y 3', async () => {
     await h.runAssignments();
     h.frame(route2035162Frames[0].raw, route2035162Frames[0].receivedAt);
     await h.pollChains();
-    expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ENTER_ALERT');
     h.frame(route2035162Frames[1].raw, route2035162Frames[1].receivedAt);
     await h.pollChains();
     expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_EXIT_ALERT');
@@ -188,14 +193,14 @@ test('tramas físicas de 2035162 no saltan los puntos 2 y 3', async () => {
     h.deps.logger.info = jest.fn();
     for (const frame of route2035162Frames.slice(3)) h.frame(frame.raw, frame.receivedAt);
     await h.pollChains();
-    expect((await h.routeStates.get(42))).toMatchObject({ stepSeq: 1, currentPointId: 2, fsmState: 'IN_ZONE' });
+    expect((await h.routeStates.get(42))).toMatchObject({ stepSeq: 1, currentPointId: 2, fsmState: 'AWAITING_ENTER_ALERT' });
     expect(h.sent).toHaveLength(2);
     expect(getPlan).not.toHaveBeenCalled();
     expect(jest.mocked(h.deps.logger.info).mock.calls.filter(([event]) => event === 'exit_before_enter_ignored')).toHaveLength(2);
   } finally { h.redis.disconnect(); }
 });
 
-test('ruta reanudada en IN_ZONE exige entrada antes de aceptar salida', async () => {
+test('ruta reanudada en AWAITING_ENTER_ALERT exige entrada antes de aceptar salida', async () => {
   const h = setup();
   try {
     await h.runAssignments();
@@ -204,7 +209,7 @@ test('ruta reanudada en IN_ZONE exige entrada antes de aceptar salida', async ()
     const getPlan = jest.spyOn(h.deps.catalog.plans, 'getPlan');
     h.deps.logger.info = jest.fn();
     h.frame(exit); await resumed.run();
-    expect((await h.routeStates.get(42))?.fsmState).toBe('IN_ZONE');
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ENTER_ALERT');
     expect(getPlan).not.toHaveBeenCalled();
     expect(h.deps.logger.info).toHaveBeenCalledWith('exit_before_enter_ignored', expect.objectContaining({ stepSeq: 0 }));
     await h.advance(60_000);
@@ -225,7 +230,8 @@ test('tras reiniciar se retransmite el comando aceptado aunque cambie el plan', 
     h.scheduler.onTask((task) => resumed.onTask(task));
     await resumed.resume((await h.routeStates.get(42))!);
     expect(h.scheduler.count()).toBe(1);
-    await h.advance(150000);
+    await h.advance(h.opts.ackRetryBackoffMs);
+    await h.advance(0);
     expect(h.sent).toHaveLength(2);
     expect(h.sent[1].command).toBe(original);
     expect(h.sent[1].idempotencyKey).toBe('42-0-2');
@@ -234,12 +240,59 @@ test('tras reiniciar se retransmite el comando aceptado aunque cambie el plan', 
   } finally { h.redis.disconnect(); }
 });
 
+test('el mínimo no reenvía sin lectura; la lectura posterior sí, tras guardar el cursor', async () => {
+  const h = setup();
+  try {
+    h.opts.ackRetryBackoffMs = 30_000;
+    await h.runAssignments();
+    await h.advance(30_000);
+    expect(h.sent).toHaveLength(1);
+    const cursorSet = jest.spyOn(h.cursors, 'set');
+    await h.pollChains();
+    expect(cursorSet).toHaveBeenCalled();
+    expect(h.sent).toHaveLength(2);
+    expect(h.sent[1].idempotencyKey).toBe('42-0-2');
+    expect((await h.routeStates.get(42))?.ackDeadline).toBe(new Date(Date.parse('2026-11-17T12:00:30Z') + 30_000).toISOString());
+  } finally { h.redis.disconnect(); }
+});
+
+test('un ACK del lote después del mínimo impide retransmitir', async () => {
+  const h = setup();
+  try {
+    h.opts.ackRetryBackoffMs = 30_000;
+    await h.runAssignments();
+    await h.advance(30_000);
+    h.frame(ack('0000'));
+    await h.pollChains();
+    expect(h.sent).toHaveLength(1);
+    expect((await h.routeStates.get(42))?.fsmState).toBe('AWAITING_ENTER_ALERT');
+    await h.advance(90_000);
+    expect(h.sent).toHaveLength(1);
+  } finally { h.redis.disconnect(); }
+});
+
+test('sin lectura posterior al mínimo la salvaguarda retransmite a dos intervalos', async () => {
+  const h = setup();
+  try {
+    h.opts.ackRetryBackoffMs = 30_000;
+    await h.runAssignments();
+    await h.pollChains(); // lectura anterior al mínimo
+    await h.advance(30_000);
+    expect(h.sent).toHaveLength(1);
+    await h.advance(89_999);
+    expect(h.sent).toHaveLength(1);
+    await h.advance(1);
+    expect(h.sent[1].idempotencyKey).toBe('42-0-2');
+  } finally { h.redis.disconnect(); }
+});
+
 test('estado antiguo sin comando reconstruye y alerta al retransmitir', async () => {
   const h = setup();
   try {
     await h.runAssignments();
     await h.routeStates.set({ ...(await h.routeStates.get(42))!, lastAcceptedCommand: null });
-    await h.advance(150000);
+    await h.advance(h.opts.ackRetryBackoffMs);
+    await h.advance(0);
     expect(h.sent).toHaveLength(2);
     expect(h.warnings).toContain('accepted_command_missing_rebuilt');
   } finally { h.redis.disconnect(); }
@@ -289,7 +342,7 @@ test('si getPlan falla al salir, el cursor conserva la trama y la aplica luego',
   } finally { h.redis.disconnect(); }
 });
 
-test('cierre no vigente transmite reset y elimina tras su ACK', async () => {
+test('cierre no vigente transmite reset y GTOUT antes de eliminar', async () => {
   const h = setup();
   try {
     await h.runAssignments();
@@ -297,6 +350,8 @@ test('cierre no vigente transmite reset y elimina tras su ACK', async () => {
     await h.runAssignments();
     expect((await h.routeStates.get(42))?.closing?.reason).toBe('ASSIGNMENT_ENDED');
     h.frame(ack('0001')); await h.pollChains();
+    expect((await h.routeStates.get(42))?.closingPhase).toBe('OUT_OFF');
+    h.frame(outAck('0002')); await h.pollChains();
     expect(await h.routeStates.get(42)).toBeNull();
     expect(await h.cursors.get(9001)).toBeNull();
   } finally { h.redis.disconnect(); }
@@ -309,10 +364,69 @@ test('el reset de cierre se retransmite aunque la asignación ya no sea vigente'
     h.row.enUso = false;
     await h.runAssignments();
     const reset = h.sent[1].command;
-    await h.advance(150000);
+    await h.advance(h.opts.ackRetryBackoffMs);
+    await h.advance(0);
     expect(h.sent).toHaveLength(3);
     expect(h.sent[2].command).toBe(reset);
     expect(h.sent[2].idempotencyKey).toBe('42-1-2');
+  } finally { h.redis.disconnect(); }
+});
+
+test('GTOUT se reanuda y retransmite con su comando y serial hasta recibir su ACK', async () => {
+  const h = setup();
+  try {
+    h.opts.ackRetryBackoffMs = 30_000;
+    await h.runAssignments();
+    h.row.enUso = false;
+    await h.runAssignments();
+    const resetState = (await h.routeStates.get(42))!;
+    await new StepRunner(h.deps, h.opts, async () => 'unused').resume(resetState);
+    h.frame(ack('0001')); await h.pollChains();
+    const outState = (await h.routeStates.get(42))!;
+    expect(outState).toMatchObject({ closingPhase: 'OUT_OFF', fsmState: 'AWAITING_ACK', stepSeq: 2 });
+    await new StepRunner(h.deps, h.opts, async () => 'unused').resume(outState);
+    await h.advance(30_000);
+    expect(h.sent).toHaveLength(3);
+    await h.advance(90_000);
+    expect(h.sent[3]).toMatchObject({ idempotencyKey: '42-2-2', command: outState.lastAcceptedCommand });
+    h.frame(ack('0002')); await h.pollChains();
+    expect((await h.routeStates.get(42))?.closingPhase).toBe('OUT_OFF');
+    h.frame(outAck('0002')); await h.pollChains();
+    expect(await h.routeStates.get(42)).toBeNull();
+  } finally { h.redis.disconnect(); }
+});
+
+test('COMPLETED deja empezar B; avisos se deduplican y borrar A conserva índice y cursor de B', async () => {
+  const h = setup();
+  try {
+    const b: AssignmentRow = { ...h.row, assignmentId: 43, horaInicial: new Date(h.row.horaInicial.getTime() + 1000) };
+    h.deps.detectors.assignments.listVigentes = async () => [h.row, b].filter((row) => row.enUso);
+    h.deps.detectors.assignments.getById = async (id) => id === 42 ? h.row : b;
+    h.deps.logger.info = jest.fn();
+    h.deps.logger.debug = jest.fn();
+    await h.runAssignments();
+    await h.runAssignments();
+    expect(h.warnings.filter((event) => event === 'unit_already_in_route')).toHaveLength(1);
+    h.frame(ack('0000')); await h.pollChains();
+    h.frame(enter); await h.pollChains();
+    h.frame(exit); await h.pollChains();
+    h.frame(ack('0001')); await h.pollChains();
+    h.frame(enter); await h.pollChains();
+    h.frame(exit); await h.pollChains();
+    h.frame(ack('0002')); await h.pollChains();
+    h.frame(outAck('0003')); await h.pollChains();
+    expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
+    await h.runAssignments();
+    expect((await h.routeStates.get(43))?.fsmState).toBe('AWAITING_ACK');
+    expect(h.deps.logger.info).toHaveBeenCalledWith('assignment_skipped_completed', expect.objectContaining({ routeId: 42 }));
+    expect(h.deps.logger.debug).toHaveBeenCalledWith('assignment_poll', expect.objectContaining({ candidateIds: [43] }));
+    const cursorB = await h.cursors.get(9001);
+    h.row.enUso = false;
+    await h.runAssignments();
+    expect(await h.routeStates.get(42)).toBeNull();
+    expect((await h.routeStates.getByDevice(9001))?.assignmentId).toBe(43);
+    expect(await h.cursors.get(9001)).toEqual(cursorB);
+    expect(jest.mocked(h.deps.logger.info).mock.calls.filter(([event]) => event === 'assignment_skipped_completed')).toHaveLength(1);
   } finally { h.redis.disconnect(); }
 });
 
@@ -321,11 +435,12 @@ test('ackResendEnabled=false conserva el paso y reprograma otra ventana', async 
   try {
     h.opts.ackResendEnabled = false;
     await h.runAssignments();
-    await h.advance(150000);
+    await h.advance(h.opts.ackRetryBackoffMs);
+    await h.advance(0);
     expect(h.sent).toHaveLength(1);
     expect(h.warnings).toContain('ack_window_expired');
     expect(h.scheduler.count()).toBe(1);
-    await h.advance(150000);
+    await h.advance(h.opts.ackRetryBackoffMs);
     expect(h.warnings.filter((event) => event === 'ack_window_expired')).toHaveLength(2);
   } finally { h.redis.disconnect(); }
 });
@@ -559,7 +674,8 @@ test('la retransmisión continúa al pasar de estado 3 a 4', async () => {
   try {
     await h.runAssignments();
     h.row.estado = 4;
-    await h.advance(150000);
+    await h.advance(h.opts.ackRetryBackoffMs);
+    await h.advance(0);
     expect(h.sent).toHaveLength(2);
     expect(h.sent[1].idempotencyKey).toBe('42-0-2');
   } finally { h.redis.disconnect(); }

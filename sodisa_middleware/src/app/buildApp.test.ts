@@ -196,25 +196,18 @@ test('fábricas reales configuran pool de tres conexiones y Redis de cola sin re
   queue.disconnect();
 });
 
-test('avisa si la ventana ACK es demasiado corta y registra las opciones nuevas', async () => {
+test('registra el mínimo ACK y lo pasa al orquestador sin aviso de coherencia', async () => {
   const h = fixture();
-  h.config.ackRetryBackoffMs = 149_999;
+  h.config.ackRetryBackoffMs = 30_000;
   const app = buildApp(h.config, h.logger, h.factories);
   await app.start();
-  expect(h.logger.warn).toHaveBeenCalledWith('config_warning', expect.objectContaining({
-    deviceReportIntervalMs: 60_000, chainPollIntervalMs: 60_000, ackRetryBackoffMs: 149_999,
-  }));
+  expect(h.logger.warn).not.toHaveBeenCalledWith('config_warning', expect.anything());
   expect(h.logger.info).toHaveBeenCalledWith('startup_config', expect.objectContaining({
-    config: expect.objectContaining({ chainPollIntervalMs: 60_000, chainMaxQueriesPerSecond: 3 }),
+    config: expect.objectContaining({ chainPollIntervalMs: 60_000, chainMaxQueriesPerSecond: 3, ackRetryBackoffMs: 30_000 }),
   }));
   const startup = jest.mocked(h.logger.info).mock.calls.find(([event]) => event === 'startup_config')?.[1];
   expect(startup?.config).not.toHaveProperty('partitionRefreshMs');
   await app.shutdown('test');
-  const normal = fixture();
-  const normalApp = buildApp(normal.config, normal.logger, normal.factories);
-  await normalApp.start();
-  expect(normal.logger.warn).not.toHaveBeenCalledWith('config_warning', expect.anything());
-  await normalApp.shutdown('test');
 });
 
 test('el lector usa un limitador SQL para cada consulta a tbl_cadena', async () => {

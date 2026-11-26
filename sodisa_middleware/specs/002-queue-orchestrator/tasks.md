@@ -1,5 +1,9 @@
 # Tasks 002 — Orquestador
 
+- [x] **Enmienda de cierre y entrada.** Renombrar el estado de espera de entrada, cerrar con reset y `GTOUT` secuenciales, comprobar tipo y serial de ACK y reanudar cualquiera de las fases.
+- [x] **Enmienda de reenvío.** Usar `ackDeadline` como mínimo, decidir tras lectura completa y cursor guardado, y retransmitir por salvaguarda solo sin lectura posterior al mínimo; probar reinicio y `ACK_RESEND_ENABLED=false`.
+- [x] **Enmienda de selección.** Excluir `COMPLETED`, liberar índices, deduplicar avisos y preservar el cursor de la ruta nueva al limpiar una antigua.
+
 - [x] **T1. Tipos y serial.** `types.ts` (interfaces de la spec, eventos, efectos, `StepTask`) y `serial.ts` con prueba (0 → `0000`, 255 → `00FF`, mayúsculas).
 - [x] **T2. Transiciones puras.** `transition.ts`: filas 3 a 12 y avance de paso (siguiente punto no cumplido, paso de reset, `closing`). Una prueba por fila y por rama (incluidas: ACK de otro serial, duplicado, salida sin entrada ignorada, `geofenceId` distinto de 0, plan con puntos agregados o eliminados).
 - [x] **T3. Scheduler y exclusión.** Interfaz y `FakeScheduler` con tiempo controlado; `keyedMutex.ts` con prueba de no solapamiento por `assignmentId`.

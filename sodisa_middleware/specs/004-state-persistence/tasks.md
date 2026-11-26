@@ -1,5 +1,7 @@
 # Tasks — 004-state-persistence
 
+- [x] **Enmienda de estado e índice.** Migrar el nombre de estado y la fase de cierre al leer JSON anterior; guardar hora de aceptación y proteger atómicamente el índice de dispositivo al completar o borrar una ruta.
+
 ## Transición (primera tarea de la tanda 1)
 - [x] Verificar que las carpetas `legacy/event-detectors`, `legacy/orchestrator` y `legacy/app` ya fueron movidas por la persona responsable del repo. Si no, detenerse y avisar.
 - [x] Excluir `legacy/` de `tsconfig.json`, `tsconfig.build.json`, Jest y ESLint, y confirmar que `npm run build`, `npm test` y `npm run lint` corren en verde sin las pruebas de `legacy/`. No modificar nada dentro de `legacy/`.
