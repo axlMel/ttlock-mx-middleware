@@ -46,7 +46,7 @@ Flujo obligatorio para cualquier tarea nueva o modificación:
 - **RouteState, ChainCursor y caché de catálogo:** estado propio en Redis (spec 004), nunca en la BD externa.
 
 ## Máquina de estados (FSM) por asignación — referencia rápida
-`PENDING → CONFIGURING → AWAITING_ACK → IN_ZONE → AWAITING_EXIT_ALERT → (siguiente punto) PENDING → … → paso de reset → COMPLETED`
+`PENDING → CONFIGURING → AWAITING_ACK → AWAITING_ENTER_ALERT → AWAITING_EXIT_ALERT → (siguiente punto) PENDING → … → paso de reset → COMPLETED`
 
 No existe `FAILED` ni pausa para operador: los reintentos de ACK son continuos. Si la asignación deja de ser vigente, la ruta se cierra con un reset. Detalle en `specs/002-queue-orchestrator/spec.md`.
 
@@ -80,7 +80,7 @@ ASSIGNMENT_TZ=UTC
 POLL_INTERVAL_MS_ROUTES=10000
 CHAIN_POLL_INTERVAL_MS=60000
 CHAIN_MAX_QUERIES_PER_SECOND=3
-ACK_RETRY_BACKOFF_MS=150000
+ACK_RETRY_BACKOFF_MS=30000
 ACK_MAX_RETRIES=3
 ACK_RESEND_ENABLED=true
 CATALOG_REVALIDATE_MS=300000

@@ -84,7 +84,7 @@ Cuerpo: `{ "companyId": <id de la API>, "unitId": "<int_idunidad>", "comando": "
 | `POLL_INTERVAL_MS_ROUTES` | `10000` | Consulta de asignaciones (espaciado adaptativo, hasta 5×) |
 | `CHAIN_POLL_INTERVAL_MS` | `60000` | Intervalo de consulta de tramas por equipo en espera; las consultas se reparten en el tiempo |
 | `CHAIN_MAX_QUERIES_PER_SECOND` | `3` | Tope duro de consultas por segundo a `tbl_cadena` |
-| `ACK_RETRY_BACKOFF_MS` | `150000` | Espera del ACK tras cada transmisión antes de retransmitir |
+| `ACK_RETRY_BACKOFF_MS` | `30000` | Espera del ACK tras cada transmisión antes de retransmitir |
 | `ACK_MAX_RETRIES` | `3` | Retransmisiones por lote antes de un aviso; los lotes continúan |
 | `ACK_RESEND_ENABLED` | `true` | Interruptor de seguridad de la retransmisión |
 | `CATALOG_REVALIDATE_MS` | `300000` | Edad máxima de un dato en caché antes de revalidarlo |
@@ -149,3 +149,10 @@ No hay recarga en caliente en la v1. Un modelo de dispositivo nuevo exige cambia
 | Inicio de la tanda 1 | Mover el código antiguo de `src/event-detectors/`, `src/orchestrator/`, `src/device-directory/` y `src/app/` a `legacy/`, fuera de `tsconfig` y de las pruebas | Dependen de contratos que 004, 003 y 005 van a cambiar; así `npm test` sigue en verde mientras se reescriben |
 | Fin de la tanda 1 | `docker-compose.yml`, `local-db/`, valores locales de `.env.example` y menciones a Docker en `AGENTS.md` | Sin el código antiguo ninguna prueba necesita la BD local |
 | Fin de la tanda 3 | `legacy/` | Ya fue reemplazado por 001, 002 y 006 nuevos |
+
+## 14. Cierre de la ruta: apagado de la salida 3
+Al cerrar una ruta con orden, ya sea terminada o cancelada, el middleware envía primero el reset de la geocerca y espera su ACK. Después envía `AT+GTOUT` para apagar la salida 3 y espera su ACK antes de dar la ruta por completada. No se envían a la par: UDP no garantiza el orden, y un apagado que llegara antes del reset podría quedar encendido otra vez si el equipo regresa a la zona antes de aplicarlo.
+
+- GV300W: `AT+GTOUT=gv300w,,,,,,,0,,,,,,,,,,{serial}$`
+- GV310LAU: `AT+GTOUT=gv310lau,,,,,,,0,,,,,,,,,,{serial}$` (ACK sin validar con equipo real)
+- El ACK es `+ACK:GTOUT,<versión>,<imei>,,<serial>,<hora>,<contador>$`, con el serial en el campo 4. El equipo repite el serial recibido.
