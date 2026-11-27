@@ -10,7 +10,7 @@
 2. Cuando una asignación está por iniciar, resuelve su unidad, dispositivo y modelo, y lee los puntos de su ruta con coordenadas y radio.
 3. Configura en el equipo, uno por uno, la geocerca del punto actual (`AT+GTGEO`). **El envío lo hace la API de comandos**, no el middleware.
 4. Espera el ACK del equipo, su entrada a la zona y su salida de la zona (la salida solo cuenta después de la entrada) leyendo las tramas de `tbl_cadena`.`
-5. Pasa al siguiente punto. Al terminar la ruta, o cuando la asignación deja de ser vigente, desactiva la zona (reset, `Mode=0`).
+5. Pasa al siguiente punto. Al terminar la ruta, o cuando la asignación deja de ser vigente, cierra: reset de la geocerca (`Mode=0`), su ACK, apagado de la salida 2 y su ACK.
 6. Nunca se rinde, nunca salta un punto y nunca se detiene por un error.
 
 La v1 atiende rutas **con orden** (`int_tipo = 0`). Las rutas desordenadas están planificadas (§11).
@@ -45,7 +45,7 @@ Vigente ⇔ `bol_enuso` e `int_estado` ∈ {3, 4}. `bol_enuso = false` equivale 
 |---|---|---|
 | 1 | Asignada | Espera: con unidad asignada, aún no es hora de salir. No se configura. |
 | 3, 4 | ATiempo, Tarde | **Vigente.** 3 = a tiempo de salir; 4 = unidad retrasada, lista para salir. De 3 a 4 se sigue con la misma ruta. |
-| 2, 5, 6, 7 | Cumplida, Cancelado, Incumplida, Terminar | Deja de ser vigente. Si había ruta en curso: reset y limpiar. El estado final se registra. |
+| 2, 5, 6, 7 | Cumplida, Cancelado, Incumplida, Terminar | Deja de ser vigente. Si había ruta en curso: reset de la geocerca, su ACK, apagado de la salida 2, su ACK y limpiar. El estado final se registra. |
 | -1, 0 | CanceladoEDI, SinAsignar | Nunca vigente. |
 
 **Inicio de ruta:** asignación vigente. La hora final (`dt_hora_final`) solo se llena cuando la asignación termina, por un usuario o por el sistema, y no interviene: decide el estado.
@@ -150,9 +150,9 @@ No hay recarga en caliente en la v1. Un modelo de dispositivo nuevo exige cambia
 | Fin de la tanda 1 | `docker-compose.yml`, `local-db/`, valores locales de `.env.example` y menciones a Docker en `AGENTS.md` | Sin el código antiguo ninguna prueba necesita la BD local |
 | Fin de la tanda 3 | `legacy/` | Ya fue reemplazado por 001, 002 y 006 nuevos |
 
-## 14. Cierre de la ruta: apagado de la salida 3
-Al cerrar una ruta con orden, ya sea terminada o cancelada, el middleware envía primero el reset de la geocerca y espera su ACK. Después envía `AT+GTOUT` para apagar la salida 3 y espera su ACK antes de dar la ruta por completada. No se envían a la par: UDP no garantiza el orden, y un apagado que llegara antes del reset podría quedar encendido otra vez si el equipo regresa a la zona antes de aplicarlo.
+## 14. Cierre de la ruta: apagado de la salida 2
+Al cerrar una ruta con orden, ya sea terminada o cancelada, el middleware envía primero el reset de la geocerca y espera su ACK. Después envía `AT+GTOUT` para apagar la salida 2 y espera su ACK antes de dar la ruta por completada. No se envían a la par: UDP no garantiza el orden, y un apagado que llegara antes del reset podría quedar encendido otra vez si el equipo regresa a la zona antes de aplicarlo.
 
-- GV300W: `AT+GTOUT=gv300w,,,,,,,0,,,,,,,,,,{serial}$`
-- GV310LAU: `AT+GTOUT=gv310lau,,,,,,,0,,,,,,,,,,{serial}$` (ACK sin validar con equipo real)
+- GV300W: `AT+GTOUT=gv300w,,,,0,,,,,,,,,,,,,{serial}$`
+- GV310LAU: `AT+GTOUT=gv310lau,,,,0,,,,,,,,,,,,,{serial}$`
 - El ACK es `+ACK:GTOUT,<versión>,<imei>,,<serial>,<hora>,<contador>$`, con el serial en el campo 4. El equipo repite el serial recibido.

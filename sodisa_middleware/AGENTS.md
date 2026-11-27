@@ -46,9 +46,9 @@ Flujo obligatorio para cualquier tarea nueva o modificación:
 - **RouteState, ChainCursor y caché de catálogo:** estado propio en Redis (spec 004), nunca en la BD externa.
 
 ## Máquina de estados (FSM) por asignación — referencia rápida
-`PENDING → CONFIGURING → AWAITING_ACK → AWAITING_ENTER_ALERT → AWAITING_EXIT_ALERT → (siguiente punto) PENDING → … → paso de reset → COMPLETED`
+`PENDING → CONFIGURING → AWAITING_ACK → AWAITING_ENTER_ALERT → AWAITING_EXIT_ALERT → (siguiente punto) PENDING → … → paso de reset → paso de apagado de la salida 2 → COMPLETED`
 
-No existe `FAILED` ni pausa para operador: los reintentos de ACK son continuos. Si la asignación deja de ser vigente, la ruta se cierra con un reset. Detalle en `specs/002-queue-orchestrator/spec.md`.
+No existe `FAILED` ni pausa para operador: los reintentos de ACK son continuos. Si la asignación deja de ser vigente, la ruta se cierra con reset de la geocerca, su ACK, apagado de la salida 2 y su ACK. Detalle en `specs/002-queue-orchestrator/spec.md`.
 
 ## Estilo y convenciones
 - Node.js 20+, TypeScript estricto (`strict: true`).
