@@ -5,7 +5,7 @@
 ## Objetivo
 Avanzar cada asignación vigente: iniciarla cuando corresponda, configurar el punto actual en el equipo
 (vía la API de comandos), confirmar su ACK, detectar la entrada y la salida de zona, pasar al siguiente punto y
-cerrar la ruta desactivando la zona.
+cerrar la ruta desactivando la zona y apagando la salida 2.
 
 ## Principio rector
 Este middleware corre sin interfaz ni operador. Por eso:
@@ -70,7 +70,7 @@ Todo se exporta desde `src/orchestrator/index.ts`; es lo único que otros módul
 - **Vigente** ⇔ `isActiveAssignment(row)` de 001: `bol_enuso` e `int_estado` ∈ {3, 4}. El estado 1 espera; `bol_enuso = false` equivale a asignación eliminada.
 - **Inicio de ruta**: asignación vigente, empresa habilitada y sin `RouteState`. La hora final no interviene: solo se llena cuando la asignación termina, y la vigencia la decide el estado.
 - **Continuidad:** el paso de 3 a 4 (o de 4 a 3) con la ruta en curso no cierra ni reinicia nada; sigue el mismo `RouteState`, `stepSeq` y temporizadores.
-- Una asignación vigente por unidad. Se excluyen las asignaciones `COMPLETED` antes de ordenar las candidatas por `horaInicial` y `assignmentId`. El índice `unitId → assignmentId` contiene solo rutas activas y se reconstruye con esas rutas al arrancar. Se registra `assignment_skipped_completed` una vez por vigencia y `unit_already_in_route` una vez por par candidata–ocupante. `assignment_poll` incluye hasta 20 `candidateIds`.
+- Una asignación vigente por unidad. Se excluyen las asignaciones `COMPLETED` antes de ordenar las candidatas por `horaInicial` y `assignmentId`. El índice `unitId → assignmentId` contiene solo rutas activas y se reconstruye con esas rutas al arrancar. Se registra `assignment_skipped_completed` (`info`, con `routeId` y `unitId`) una vez por vigencia y `unit_already_in_route` (`warn`, con `routeId`, `unitId` y `occupyingRouteId`) una vez por par candidata–ocupante. `assignment_poll` incluye hasta 20 `candidateIds`.
 - **Al iniciar** (en este orden): `resolveForRouteStart` (005) → `getPlan` con `forceFresh` (005) → si `routeType = 1`: alerta `ROUTE_TYPE_UNORDERED_SKIPPED` (una vez por asignación mientras siga vigente, sin persistir) y **no se crea estado** → `initCursor` (001) y guardarlo → crear el `RouteState` (`PENDING`, `stepSeq = 0`, `currentPointId` = primer punto, `routeType = 0`). Si algo falla (modelo desconocido, plan inválido, unidad inválida), se registra la alerta, **no se crea estado** y se reintenta en el siguiente ciclo.
 - El cursor del equipo se inicializa **antes** de la primera transmisión, para ignorar tramas anteriores.
 
@@ -82,9 +82,9 @@ Todo se exporta desde `src/orchestrator/index.ts`; es lo único que otros módul
 | `AWAITING_ACK` | La API aceptó la transmisión; se espera el ACK del equipo. |
 | `AWAITING_ENTER_ALERT` | ACK recibido; zona activa; se espera la entrada. Una salida en este estado se ignora. |
 | `AWAITING_EXIT_ALERT` | Entrada registrada; se espera la salida. |
-| `COMPLETED` | Ruta terminada; ACK del reset y de `GTOUT` recibidos. |
+| `COMPLETED` | Ruta terminada, zona desactivada y salida 2 apagada; ACK del reset y de `GTOUT` recibidos. |
 
-Un **paso** es un punto de la ruta, el reset (`currentPointId = null`, `closingPhase = RESET`) o el apagado de salida 3 (`closingPhase = OUT_OFF`).
+Un **paso** es un punto de la ruta, el reset (`currentPointId = null`, `closingPhase = RESET`) o el apagado de salida 2 (`closingPhase = OUT_OFF`).
 `stepSeq` cuenta los pasos (empieza en 0) y su hexadecimal en mayúsculas de 4 dígitos es el **serial** del comando. Todas las transmisiones de un mismo paso usan el mismo serial.
 Comandos: punto → `buildGeoCommand` con modo 3 (entra y sale), zona 0 y los datos del punto; reset → `buildResetCommand`; apagado → `buildOutOffCommand` (003).
 
@@ -217,6 +217,8 @@ Todo lo que toca el estado de una misma asignación (tramas, temporizadores, cie
 - [ ] Una entrada en `AWAITING_ACK` no habilita la salida; una entrada repetida en `AWAITING_EXIT_ALERT` se ignora.
 - [ ] El ACK del reset inicia el paso `GTOUT`; solo su ACK correcto completa la ruta sin entrada ni salida previas.
 - [ ] Si A está `COMPLETED`, B de la misma unidad puede comenzar; borrar A conserva el índice y cursor de B. Los avisos de completada y unidad ocupada no se repiten cada ciclo.
+- [ ] `assignment_skipped_completed` incluye `routeId` y `unitId`; `unit_already_in_route` incluye `routeId`, `unitId` y `occupyingRouteId`, con pruebas que comparan los valores.
+- [ ] En el paso de apagado, los ACK `GTOUT` reales de reglas del equipo con seriales `01F8` y `002E` se ignoran si el serial del paso es `0A05`; el ACK real `0A05` completa el cierre.
 - [ ] Con las tramas reales de la ruta 2035162, el paso 0 avanza tras entrada y salida; las salidas de 16:36:54 y 16:37:53 en el paso 1 se ignoran y no se transmite el paso 2 ni el reset.
 - [ ] Una ruta reanudada en `AWAITING_ENTER_ALERT` exige una entrada antes de aceptar la salida.
 - [ ] El polling de tramas solo consulta equipos en espera, sin rebasar el tope por segundo, y se pone al día con `hasMore` sin ráfagas.

@@ -1,6 +1,8 @@
 # Tasks 003 — Protocolo Queclink
 
-- [x] **Enmienda GTOUT.** Armar el apagado de salida 3 con serial validado, identificar el comando en cada ACK y probar tres tramas `GTOUT` como fixtures.
+- [x] **Enmienda GTOUT.** Armar el apagado de salida 2 con serial validado, identificar el comando en cada ACK y probar cuatro tramas reales `GTOUT` como fixtures.
+
+- [x] **Enmienda de salida 2 y fixtures reales.** Sustituir el formato de `buildOutOffCommand`, reemplazar los tres fixtures sintéticos por tramas físicas de ambos modelos y agregar la cuarta; verificar los comandos exactos, los índices del parser y el serial inválido. Ejecutar lint, build y tests y cerrar en el mismo commit.
 
 - [x] **T1. Fixtures.** Copiar tal cual las siete tramas reales de la sección “Tramas reales de referencia” de la spec a `src/protocol/__fixtures__/`. Los índices de campo de la spec ya están verificados contra ellas; el agente solo los implementa.
 - [x] **T2. Tipos y errores.** `types.ts`, `errors.ts`.

@@ -1,7 +1,7 @@
 # Plan 003 — Protocolo Queclink
 
 ## Enmienda de apagado de salida
-`buildOutOffCommand` reutiliza la validación de serial de `GTGEO` y el token del perfil. `parseMessage` distingue el encabezado de cada ACK antes de escoger el índice del serial: 5 para `GTGEO`, 4 para `GTOUT`. Tres fixtures `GTOUT` cubren el campo 4; el índice de GV310LAU requiere comprobación en equipo real.
+`buildOutOffCommand` reutiliza la validación de serial de `GTGEO` y el token del perfil. El comando apaga la salida 2 con `0` en el campo 4 y serial en el 17. `parseMessage` distingue el encabezado de cada ACK antes de escoger el índice del serial: 5 para `GTGEO`, 4 para `GTOUT`. Cuatro fixtures reales `GTOUT`, incluidos GV300W y GV310LAU, verifican el campo 4 en ambos modelos y el `$` opcional.
 
 ## Decisiones
 1. **Funciones libres y datos, no clases.** `DeviceProfile` es un objeto de datos; `buildGeoCommand(profile, input)` es una función. (Si spec y plan chocaran, gana este razonamiento: perfiles como datos permiten añadir un modelo sin tocar la lógica.)
@@ -18,6 +18,7 @@ src/protocol/
   errors.ts           InvalidCommandInputError
   profiles.ts         PROFILES, profileFor
   buildGeoCommand.ts  validación + armado + buildResetCommand + RESET_PARAMS
+  buildOutOffCommand.ts  apagado de la salida 2 con serial validado
   decodeFrame.ts
   parseMessage.ts
   index.ts            única entrada pública
@@ -27,7 +28,7 @@ src/protocol/
 Si hay código anterior de protocolo en `legacy/`, el agente puede leerlo como referencia, pero no importarlo ni modificarlo.
 
 ## Orden de trabajo
-Fixtures y confirmación de índices → tipos y errores → armado (con pruebas) → lectura (con pruebas) → prueba de “sin red” → limpieza del transporte antiguo.
+Fixtures y confirmación de índices → tipos y errores → armado (con pruebas) → lectura (con pruebas) → prueba de “sin red” → limpieza del transporte antiguo. Enmienda de salida 2: actualizar formato y fixtures reales → probar comando byte a byte y clasificación de cuatro ACK → ejecutar lint, build y tests.
 
 ## Riesgos
 - Los índices de campo ya están verificados contra las siete tramas reales (ver spec); las pruebas de fixtures los protegen de regresiones.

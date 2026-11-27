@@ -113,7 +113,7 @@ test('ruta de dos puntos llega a COMPLETED con reset y seriales sucesivos', asyn
     expect(h.sent[2].command).toContain(',0,0.000000,0.000000,50,');
     h.frame(ack('0002')); await h.pollChains();
     expect((await h.routeStates.get(42))).toMatchObject({ fsmState: 'AWAITING_ACK', closingPhase: 'OUT_OFF', stepSeq: 3 });
-    expect(h.sent[3].command).toBe('AT+GTOUT=gv300w,,,,,,,0,,,,,,,,,,0003$');
+    expect(h.sent[3].command).toBe('AT+GTOUT=gv300w,,,,0,,,,,,,,,,,,,0003$');
     h.frame(outAck('0003')); await h.pollChains();
     expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
     expect(h.sent.map((request) => request.idempotencyKey)).toEqual(['42-0-1', '42-1-1', '42-2-1', '42-3-1']);
@@ -404,9 +404,13 @@ test('COMPLETED deja empezar B; avisos se deduplican y borrar A conserva índice
     h.deps.detectors.assignments.getById = async (id) => id === 42 ? h.row : b;
     h.deps.logger.info = jest.fn();
     h.deps.logger.debug = jest.fn();
+    h.deps.logger.warn = jest.fn((event) => { h.warnings.push(event); });
     await h.runAssignments();
     await h.runAssignments();
     expect(h.warnings.filter((event) => event === 'unit_already_in_route')).toHaveLength(1);
+    const occupyingFields = jest.mocked(h.deps.logger.warn).mock.calls.find(([event]) => event === 'unit_already_in_route')?.[1];
+    expect({ routeId: occupyingFields?.routeId, unitId: occupyingFields?.unitId,
+      occupyingRouteId: occupyingFields?.occupyingRouteId }).toEqual({ routeId: 43, unitId: 81, occupyingRouteId: 42 });
     h.frame(ack('0000')); await h.pollChains();
     h.frame(enter); await h.pollChains();
     h.frame(exit); await h.pollChains();
@@ -418,7 +422,8 @@ test('COMPLETED deja empezar B; avisos se deduplican y borrar A conserva índice
     expect((await h.routeStates.get(42))?.fsmState).toBe('COMPLETED');
     await h.runAssignments();
     expect((await h.routeStates.get(43))?.fsmState).toBe('AWAITING_ACK');
-    expect(h.deps.logger.info).toHaveBeenCalledWith('assignment_skipped_completed', expect.objectContaining({ routeId: 42 }));
+    const completedFields = jest.mocked(h.deps.logger.info).mock.calls.find(([event]) => event === 'assignment_skipped_completed')?.[1];
+    expect({ routeId: completedFields?.routeId, unitId: completedFields?.unitId }).toEqual({ routeId: 42, unitId: 81 });
     expect(h.deps.logger.debug).toHaveBeenCalledWith('assignment_poll', expect.objectContaining({ candidateIds: [43] }));
     const cursorB = await h.cursors.get(9001);
     h.row.enUso = false;

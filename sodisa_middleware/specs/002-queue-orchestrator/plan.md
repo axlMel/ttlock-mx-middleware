@@ -20,9 +20,10 @@
 16. **Registro agregado.** El poller emite `chain_poll_summary` cada minuto con las métricas del limitador, rezago y equipos; `chain_poll_saturated` se limita a un aviso por minuto. `effectiveIntervalMs` es el máximo entre el objetivo por equipo y el tiempo requerido por la carga al tope configurado.
 17. **Partición semanal y cursores futuros.** 001 conserva marcas independientes por partición (004) y usa el limitador compartido. Antes de leer un cursor futuro heredado, el poller lo reancla a la primera transmisión persistida del paso; en estados antiguos `AWAITING_ACK` deriva `ackDeadline − backoff`, o usa `startedAt` solo en paso 0. Sin ancla segura hace `initCursor` y no procesa frames en ese turno; registra `chain_cursor_reset` sin secretos. El cursor se guarda tras aplicar el lote.
 18. **Entrada previa obligatoria.** La transición pura conserva `AWAITING_ENTER_ALERT` ante `EXIT` y devuelve un efecto específico de salida prematura. El ejecutor evita `getPlan` para ese evento y registra el efecto a nivel `info`. Solo `AWAITING_EXIT_ALERT` permite consultar el siguiente punto y avanzar. 004 migra el nombre antiguo al leerlo.
-19. **Cierre secuencial.** El reset y `GTOUT` son pasos distintos con seriales sucesivos. `closingPhase` distingue ambos; ACK de tipo incorrecto se ignora. Una ruta que ya cierra no vuelve a resetearse al perder vigencia.
+19. **Cierre secuencial.** El reset y `GTOUT` (apagado de la salida 2) son pasos distintos con seriales sucesivos. `closingPhase` distingue ambos; ACK de tipo incorrecto o serial ajeno se ignora. Una ruta que ya cierra no vuelve a resetearse al perder vigencia.
 20. **Reenvío guiado por lectura.** El poller aplica todo el lote, guarda el cursor y entonces comprueba la identidad del paso y transmisión antes de retransmitir. `ACK_DEADLINE` solo arma la salvaguarda a `lastAcceptedAt + 2 × chainPollIntervalMs`, con `ackDeadline` como mínimo. `lastAcceptedAt` sobrevive reinicios; para JSON anterior se deriva de `ackDeadline − backoff`.
 21. **Selección e índice.** Se excluyen estados `COMPLETED` antes de escoger una asignación por unidad. La memoria y Redis indexan solo rutas activas. Los avisos se deduplican por vigencia y por par candidata–ocupante; limpiar una ruta antigua nunca borra el cursor de la nueva.
+22. **Trazabilidad de unidad.** Los avisos `assignment_skipped_completed` y `unit_already_in_route` añaden `unitId` de la fila sin cambiar su deduplicación. Se comprueban los valores de los campos, no solo que el evento haya ocurrido.
 
 ## Estructura
 ```
@@ -53,6 +54,8 @@ Enmienda de carga: actualizar contratos de 002/006 → limitador SQL compartido 
 Enmienda de particiones: marcas de 004 y selección de 001 → conservar el limitador en la ventana doble → reparar cursores futuros desde la transmisión del paso → pruebas de reinicio, registro y ausencia de ACK histórico.
 
 Enmienda de entrada previa: actualizar la spec y T2 → limitar la fila 7 y añadir la fila 12 → evitar la consulta de plan para salidas prematuras → probar transición pura, lote mixto, tramas reales y reinicio → lint, build, tests y commit.
+
+Enmienda de salida 2: actualizar 003 y sus cuatro fixtures reales → comprobar que el FSM ignora ACK `GTOUT` ajenos y cierra con el serial del paso → añadir `unitId` a los dos avisos de asignación y probar sus valores → lint, build, tests y commit.
 
 ## Riesgos
 - El traductor de `jobId` tiene prueba unitaria. El adaptador completo de BullMQ queda sin prueba de integración automática porque Redis en memoria no soporta sus scripts; se verifica en el despliegue sombra.

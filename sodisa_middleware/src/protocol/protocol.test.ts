@@ -19,9 +19,9 @@ test('reset usa RESET_PARAMS para ambos modelos', () => {
   expect(buildResetCommand(PROFILES.GV310LAU, '000A', 5)).toBe('AT+GTGEO=gv310lau,5,0,0.000000,0.000000,50,30,0,0,0,0,0,0,0000,0000,0,000A$');
 });
 
-test('GTOUT apaga la salida 3 con serial validado', () => {
-  expect(buildOutOffCommand(PROFILES.GV300W, '0002')).toBe('AT+GTOUT=gv300w,,,,,,,0,,,,,,,,,,0002$');
-  expect(buildOutOffCommand(PROFILES.GV310LAU, '000A')).toBe('AT+GTOUT=gv310lau,,,,,,,0,,,,,,,,,,000A$');
+test('GTOUT apaga la salida 2 con serial validado', () => {
+  expect(buildOutOffCommand(PROFILES.GV300W, '0004')).toBe('AT+GTOUT=gv300w,,,,0,,,,,,,,,,,,,0004$');
+  expect(buildOutOffCommand(PROFILES.GV310LAU, '0004')).toBe('AT+GTOUT=gv310lau,,,,0,,,,,,,,,,,,,0004$');
   expect(() => buildOutOffCommand(PROFILES.GV300W, 'abcd')).toThrow(InvalidCommandInputError);
 });
 
@@ -43,9 +43,10 @@ test.each([
   ['gv300w-ack', { kind: 'ack', command: 'GTGEO', imei: '863457050476769', serial: 'FFFF' }],
   ['gv310lau-ack-a', { kind: 'ack', command: 'GTGEO', imei: '135790246811220', serial: '000A' }],
   ['gv310lau-ack-b', { kind: 'ack', command: 'GTGEO', imei: '868589060960328', serial: 'FFFF' }],
-  ['gv300w-out-ack-a', { kind: 'ack', command: 'GTOUT', imei: '863457050476769', serial: '0002' }],
-  ['gv300w-out-ack-b', { kind: 'ack', command: 'GTOUT', imei: '863457050476769', serial: 'FFFF' }],
-  ['gv310lau-out-ack', { kind: 'ack', command: 'GTOUT', imei: '868589060960328', serial: '000A' }],
+  ['gv300w-out-ack-a', { kind: 'ack', command: 'GTOUT', imei: '863457051741732', serial: '0A05' }],
+  ['gv300w-out-ack-b', { kind: 'ack', command: 'GTOUT', imei: '863457051741732', serial: '01F8' }],
+  ['gv300w-out-ack-c', { kind: 'ack', command: 'GTOUT', imei: '863457051741732', serial: '002E' }],
+  ['gv310lau-out-ack', { kind: 'ack', command: 'GTOUT', imei: '868589060509919', serial: '0A05' }],
   ['gv300w-enter', { kind: 'zoneEvent', imei: '863457050476769', geofenceId: 0, event: 'enter' }],
   ['gv300w-exit', { kind: 'zoneEvent', imei: '863457050476769', geofenceId: 0, event: 'exit' }],
   ['gv310lau-enter', { kind: 'zoneEvent', imei: '868589060960328', geofenceId: 0, event: 'enter' }],
@@ -53,6 +54,15 @@ test.each([
 ] as const)('clasifica fixture %s', (name, expected) => {
   const raw = fixture(name);
   expect(parseMessage(raw)).toEqual({ ...expected, raw });
+});
+
+test.each([
+  ['gv300w-out-ack-a', '+ACK:GTOUT,270F01,863457051741732,,0A05,20261126192753,4F72'],
+  ['gv300w-out-ack-b', '+ACK:GTOUT,270F01,863457051741732,,01F8,20261125211202,4D67'],
+  ['gv300w-out-ack-c', '+ACK:GTOUT,270F01,863457051741732,,002E,20261126180819,4F11'],
+  ['gv310lau-out-ack', '+ACK:GTOUT,6E0504,868589060509919,,0A05,20261127164907,BBCA$'],
+] as const)('conserva la trama real GTOUT %s byte a byte', (name, raw) => {
+  expect(fixture(name)).toBe(raw);
 });
 
 test('GV300W interpreta A1 como entrada en zona 10', () => {

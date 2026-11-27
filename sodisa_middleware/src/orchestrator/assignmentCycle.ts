@@ -120,7 +120,7 @@ export class AssignmentCycle {
         if (!this.opts.enabledCompanies.has(row.companyId) || !isActiveAssignment(row)) continue;
         if (completedIds.has(row.assignmentId)) {
           if (!this.completedAlerted.has(row.assignmentId))
-            this.deps.logger.info('assignment_skipped_completed', this.fields(row.assignmentId, 0));
+            this.deps.logger.info('assignment_skipped_completed', { ...this.fields(row.assignmentId, 0), unitId: row.unitId });
           this.completedAlerted.add(row.assignmentId);
           continue;
         }
@@ -128,7 +128,7 @@ export class AssignmentCycle {
         const occupying = this.unitIndex.get(row.unitId);
         if (occupying !== undefined && occupying !== row.assignmentId) {
           if (this.occupiedAlerted.get(row.assignmentId) !== occupying)
-            this.deps.logger.warn('unit_already_in_route', { ...this.fields(row.assignmentId, 0), occupyingRouteId: occupying });
+            this.deps.logger.warn('unit_already_in_route', { ...this.fields(row.assignmentId, 0), unitId: row.unitId, occupyingRouteId: occupying });
           this.occupiedAlerted.set(row.assignmentId, occupying);
         } else this.occupiedAlerted.delete(row.assignmentId);
         const previous = selected.get(row.unitId);

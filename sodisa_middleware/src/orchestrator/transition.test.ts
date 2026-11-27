@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { RouteState } from '../persistence';
+import { parseMessage } from '../protocol';
 import { serialFor } from './serial';
 import { transition } from './transition';
 import { FakeScheduler } from './scheduler';
@@ -74,6 +77,22 @@ test('ACK de reset pasa a GTOUT; solo su ACK del tipo y serial correctos complet
   expect(transition(awaiting, { kind: 'ACK', command: 'GTOUT', serial: '0001' }).state?.fsmState).toBe('COMPLETED');
   expect(transition({ ...awaiting, closing: { reason: 'ASSIGNMENT_ENDED', finalEstado: 4 } },
     { kind: 'ACK', command: 'GTOUT', serial: '0001' }).state).toBeNull();
+});
+
+test('ACK GTOUT reales de reglas no cierran un paso con serial 0A05', () => {
+  const state: RouteState = { ...base, fsmState: 'AWAITING_ACK', currentPointId: null,
+    closingPhase: 'OUT_OFF', closing: { reason: 'ROUTE_DONE', finalEstado: null },
+    stepSeq: 0x0A05, pendingRequest: null };
+  const eventFromFixture = (name: string) => {
+    const raw = readFileSync(join(__dirname, '../protocol/__fixtures__', `${name}.txt`), 'utf8').trimEnd();
+    const parsed = parseMessage(raw);
+    if (parsed.kind !== 'ack') throw new Error('La trama real no se clasificó como ACK');
+    return { kind: 'ACK' as const, command: parsed.command, serial: parsed.serial };
+  };
+  expect(transition(state, eventFromFixture('gv300w-out-ack-b')).state).toBe(state);
+  expect(transition(state, eventFromFixture('gv300w-out-ack-c')).state).toBe(state);
+  expect(transition(state, eventFromFixture('gv300w-out-ack-a')).state?.fsmState).toBe('COMPLETED');
+  expect(transition({ ...state, model: 'GV310LAU' }, eventFromFixture('gv310lau-out-ack')).state?.fsmState).toBe('COMPLETED');
 });
 
 test('cierre sin transmisión elimina; con transmisión crea reset', () => {

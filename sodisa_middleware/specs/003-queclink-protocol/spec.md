@@ -54,7 +54,7 @@ GV310LAU AT+GTGEO=gv310lau,{zoneId},{mode},{lon},{lat},{radio},{check},0,0,0,0,0
 - Orden **lon, lat** (no lat, lon). Coordenadas con exactamente 6 decimales (`toFixed(6)`), punto decimal.
 - Ejemplo real GV300W: `AT+GTGEO=gv300w,0,3,-99.128206,19.355383,50,30,0,0,0,0,0,0,,,0,0001$`.
 - Reset: mismo comando con `mode 0`, lon/lat `0.000000`, radio `50`.
-- Apagado de salida 3: `AT+GTOUT={token},,,,,,,0,,,,,,,,,,{serial}$`. El serial se valida con la misma regla que `GTGEO`.
+- Apagado de salida 2: `AT+GTOUT={token},,,,0,,,,,,,,,,,,,{serial}$`. Son 18 campos separados por coma: `0` en el índice 4 y serial en el índice 17. Para GV300W: `AT+GTOUT=gv300w,,,,0,,,,,,,,,,,,,{serial}$`; para GV310LAU: `AT+GTOUT=gv310lau,,,,0,,,,,,,,,,,,,{serial}$`. El serial se valida con la misma regla que `GTGEO`.
 
 ## Validación de entrada (antes de armar; si falla, `InvalidCommandInputError`)
 | Campo | Regla |
@@ -83,7 +83,7 @@ El mensaje del error nombra el campo y el valor recibido (nunca la API key ni da
 - GV310LAU: el campo 6 (`1`) es constante en GIN y GOT, no es el estado. El campo 7 (`00000001`) es una máscara de zonas con el bit de la zona activo; coincide con el id del campo 5 (zona 0 ↔ bit 0). El parser usa el campo 5; la prueba de fixtures verifica además que la máscara coincide.
 - GV300W: el campo de zona se descompone como “todo menos el último carácter = id en hex; último carácter = estado”. En v1 solo se usa la zona 0; los ids de zona 16 a 19 (rutas desordenadas) no se tratan aquí, porque su ancho en el campo se verifica en `specs/009` con una trama real.
 - Una trama de otro tipo, truncada o con campos inválidos devuelve `{ kind: 'unknown', raw }`. **Nunca lanza.**
-- El índice del ACK `GTOUT` de GV310LAU está pendiente de comprobarse físicamente; se interpreta igual que el GV300W hasta obtener una trama real.
+- El índice 4 del serial en `+ACK:GTOUT` está verificado con tramas reales de GV300W y GV310LAU.
 
 ## Tramas reales de referencia (fixtures)
 ```
@@ -97,7 +97,14 @@ LAU sale   : +RESP:GTGOT,6E0A03,868589060960328,,,0,1,00000001,,,,,1,1,0.0,0,224
 ```
 Resultados esperados: ACK GV300W → serial `FFFF`; ACK LAU → `000A` y `FFFF`; GV300W entra → zona 0 `enter`; GV300W sale → zona 0 `exit`; GTGIN → zona 0 `enter`; GTGOT → zona 0 `exit`. El `$` final puede venir o no; el parser lo tolera.
 
-Los tres fixtures de ACK `GTOUT` siguen el formato documentado en arquitectura §14 y ejercitan los seriales `0002`, `FFFF` y `000A`; el último representa GV310LAU de forma sintética hasta disponer de una trama física.
+Fixtures reales adicionales de `+ACK:GTOUT` (el último incluye el `$` final):
+```
+GV300W enviado : +ACK:GTOUT,270F01,863457051741732,,0A05,20261126192753,4F72
+GV300W regla   : +ACK:GTOUT,270F01,863457051741732,,01F8,20261125211202,4D67
+GV300W regla   : +ACK:GTOUT,270F01,863457051741732,,002E,20261126180819,4F11
+GV310LAU enviado: +ACK:GTOUT,6E0504,868589060509919,,0A05,20261127164907,BBCA$
+```
+Se clasifican como `ack` con `command: 'GTOUT'` y serial `0A05`, `01F8`, `002E` y `0A05`, respectivamente. Los ACK generados por reglas del equipo no completan el paso de apagado si su serial no coincide.
 
 ## Ganchos para rutas desordenadas (no se implementa nada más)
 - `zoneId` y `checkIntervalS` ya son parámetros (en rutas ordenadas: 0 y 30). Pendiente de `specs/009`: confirmar si en desordenadas el intervalo es 0.
@@ -108,8 +115,8 @@ Los tres fixtures de ACK `GTOUT` siguen el formato documentado en arquitectura �
 - [ ] `buildGeoCommand` produce, byte a byte, el comando esperado para cada modelo (ejemplos reales como fixtures).
 - [ ] Coordenadas siempre con 6 decimales y orden lon, lat.
 - [ ] `buildResetCommand` usa `RESET_PARAMS` (única fuente) para ambos modelos.
-- [ ] `buildOutOffCommand` genera el comando exacto de cada modelo y rechaza seriales inválidos.
-- [ ] Los ACK de `GTGEO` y `GTOUT` indican el tipo de comando y usan sus respectivos índices de serial; se prueban tres fixtures de `GTOUT`.
+- [ ] `buildOutOffCommand` genera byte a byte `AT+GTOUT=gv300w,,,,0,,,,,,,,,,,,,0004$` y `AT+GTOUT=gv310lau,,,,0,,,,,,,,,,,,,0004$`, y rechaza seriales inválidos.
+- [ ] Los ACK de `GTGEO` y `GTOUT` indican el tipo de comando y usan los índices 5 y 4, respectivamente; se prueban las cuatro tramas reales de `GTOUT`.
 - [ ] Cada fila de la tabla de validación tiene una prueba que lanza `InvalidCommandInputError`.
 - [ ] `parseMessage` clasifica los fixtures reales: ACK, entrada y salida de GV300W; GTGIN y GTGOT de GV310LAU.
 - [ ] GV300W: `00` → zona 0 exit, `01` → zona 0 enter, y un caso sintético `A1` → zona 10 enter (id de un carácter hex).

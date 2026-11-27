@@ -3,5 +3,5 @@ import { validateSerial } from './buildGeoCommand';
 
 export function buildOutOffCommand(profile: DeviceProfile, serial: string): string {
   validateSerial(serial);
-  return `AT+GTOUT=${profile.token},,,,,,,0,,,,,,,,,,${serial}$`;
+  return `AT+GTOUT=${profile.token},,,,0,,,,,,,,,,,,,${serial}$`;
 }
